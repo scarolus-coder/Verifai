@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verifai</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- AUTH SCREEN (shown before app loads) -->
+<div id="authScreen" class="auth-screen hidden">
+  <!-- Setup screen (first launch) -->
+  <div id="setupCard" class="auth-card hidden">
+    <div class="auth-logo">
+      <div class="logo-icon" style="width:48px;height:48px;font-size:22px;margin:0 auto 16px">🧪</div>
+      <h1>Welcome to Verifai</h1>
+      <p>Create your admin account to get started</p>
+    </div>
+    <div class="form-group">
+      <label>Full Name</label>
+      <input class="form-control" id="setupName" type="text" placeholder="Jane Smith" autocomplete="name" />
+    </div>
+    <div class="form-group">
+      <label>Email</label>
+      <input class="form-control" id="setupEmail" type="email" placeholder="jane@example.com" autocomplete="email" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input class="form-control" id="setupPassword" type="password" placeholder="Choose a strong password" autocomplete="new-password" />
+    </div>
+    <div class="form-group">
+      <label>Confirm Password</label>
+      <input class="form-control" id="setupConfirm" type="password" placeholder="Repeat your password" autocomplete="new-password" />
+    </div>
+    <div id="setupError" class="alert alert-error hidden" style="margin-bottom:12px"></div>
+    <button class="btn btn-primary" style="width:100%" id="setupBtn" onclick="submitSetup()">Create Admin Account</button>
+  </div>
+
+  <!-- Login screen -->
+  <div id="loginCard" class="auth-card hidden">
+    <div class="auth-logo">
+      <div class="logo-icon" style="width:48px;height:48px;font-size:22px;margin:0 auto 16px">🧪</div>
+      <h1>Verifai</h1>
+      <p>Sign in to your account</p>
+    </div>
+    <div class="form-group">
+      <label>Email</label>
+      <input class="form-control" id="loginEmail" type="email" placeholder="you@example.com" autocomplete="email" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input class="form-control" id="loginPassword" type="password" placeholder="Your password" autocomplete="current-password" />
+    </div>
+    <div id="loginError" class="alert alert-error hidden" style="margin-bottom:12px"></div>
+    <button class="btn btn-primary" style="width:100%" id="loginBtn" onclick="submitLogin()">Sign In</button>
+  </div>
+</div>
+
+<!-- MAIN APP (hidden until authenticated) -->
+<div class="app-shell" id="app" style="display:none">
+
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="topbar-logo">
+      <div class="logo-icon">🧪</div>
+      Verifai
+    </div>
+    <div class="topbar-spacer"></div>
+    <div class="project-picker" id="projectPickerWrap">
+      <button class="project-picker-btn" id="projectPickerBtn" onclick="toggleProjectDropdown()">
+        <span class="dot" id="projectDot" style="background:#3b82f6"></span>
+        <span class="name" id="projectPickerName">All Projects</span>
+        <span>▾</span>
+      </button>
+      <div class="project-dropdown hidden" id="projectDropdown"></div>
+    </div>
+    <button class="btn btn-primary" id="topNewBtn" onclick="handleTopNew()">+ New</button>
+
+    <!-- User menu -->
+    <div class="user-menu" id="userMenuWrap">
+      <button class="user-menu-btn" id="userMenuBtn" onclick="toggleUserMenu()">
+        <div class="user-avatar" id="topbarAvatar"></div>
+        <span id="topbarUserName" style="font-size:13px;color:#e2e8f0;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+        <span style="color:#94a3b8;font-size:10px">▾</span>
+      </button>
+      <div class="user-dropdown hidden" id="userDropdown">
+        <div class="ud-item" onclick="navigate('account');closeUserMenu()">My Account</div>
+        <div class="ud-divider"></div>
+        <div class="ud-item ud-signout" onclick="signOut()">Sign Out</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- BODY -->
+  <div class="body-row">
+    <nav class="sidebar">
+      <ul class="sidebar-nav" id="sidebarNav">
+        <li><button onclick="navigate('dashboard')" id="nav-dashboard" class="active">
+          <span class="nav-icon">📊</span> Dashboard
+        </button></li>
+        <li><button onclick="navigate('scenarios')" id="nav-scenarios">
+          <span class="nav-icon">🧩</span> Scenarios
+        </button></li>
+        <li><button onclick="navigate('actions')" id="nav-actions">
+          <span class="nav-icon">♻️</span> Actions
+        </button></li>
+        <li><button onclick="navigate('suites')" id="nav-suites">
+          <span class="nav-icon">📦</span> Suites
+        </button></li>
+        <li><button onclick="navigate('reports')" id="nav-reports">
+          <span class="nav-icon">📋</span> Reports
+        </button></li>
+        <li><button onclick="navigate('schedules')" id="nav-schedules">
+          <span class="nav-icon">⏰</span> Schedules
+        </button></li>
+        <li id="nav-environments-li" class="hidden"><button onclick="navigate('environments')" id="nav-environments">
+          <span class="nav-icon">⚙️</span> Environments
+        </button></li>
+        <li id="nav-users-li" class="hidden"><button onclick="navigate('users')" id="nav-users">
+          <span class="nav-icon">👥</span> Users
+        </button></li>
+      </ul>
+    </nav>
+
+    <main class="main-content" id="mainContent">
+      <!-- Dynamically rendered -->
+    </main>
+  </div>
+
+</div>
+
+<!-- TOAST CONTAINER -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- MODALS RENDERED HERE BY JS -->
+<div id="modalContainer"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

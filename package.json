@@ -1,0 +1,19 @@
+{
+  "name": "verifai",
+  "version": "2.0.0",
+  "description": "No-code QA test automation tool",
+  "main": "server.js",
+  "scripts": {
+    "start": "npx playwright install-deps chromium webkit 2>/dev/null; npx playwright install webkit 2>/dev/null; node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.3",
+    "node-cron": "^4.2.1",
+    "pdf-parse": "^2.4.5",
+    "pixelmatch": "^7.1.0",
+    "playwright": "^1.40.0",
+    "pngjs": "^7.0.0"
+  }
+}
