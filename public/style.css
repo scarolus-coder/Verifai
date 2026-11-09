@@ -1043,14 +1043,6 @@ select.form-control { cursor: pointer; }
   margin-bottom: 14px;
 }
 
-.ai-generating {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: #6366f1;
-  font-size: 13px;
-}
-
 .spinner {
   width: 18px;
   height: 18px;
@@ -1434,6 +1426,37 @@ select.form-control { cursor: pointer; }
 .role-member { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
 
 .hidden { display: none !important; }
+
+/* ─── CSS TOOLTIPS (data-tooltip) ────────────────────────── */
+
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e293b;
+  color: #f8fafc;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .15s;
+  z-index: 9999;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.4;
+}
+
+[data-tooltip]:hover::after {
+  opacity: 1;
+}
 
 /* ─── SCROLLBAR ───────────────────────────────────────────── */
 

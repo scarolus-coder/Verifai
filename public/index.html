@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Verifai</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="dist/style.css" />
 </head>
 <body>
 
@@ -54,6 +54,39 @@
     </div>
     <div id="loginError" class="alert alert-error hidden" style="margin-bottom:12px"></div>
     <button class="btn btn-primary" style="width:100%" id="loginBtn" onclick="submitLogin()">Sign In</button>
+    <p style="text-align:center;margin-top:16px;font-size:13px;color:var(--muted)">
+      Don't have an account? <a href="#" onclick="showRegisterCard();return false;" style="color:var(--primary);font-weight:500">Create one</a>
+    </p>
+  </div>
+
+  <!-- Register screen -->
+  <div id="registerCard" class="auth-card hidden">
+    <div class="auth-logo">
+      <div class="logo-icon" style="width:48px;height:48px;font-size:22px;margin:0 auto 16px">🧪</div>
+      <h1>Create Account</h1>
+      <p>Join Verifai as a member</p>
+    </div>
+    <div class="form-group">
+      <label>Full Name</label>
+      <input class="form-control" id="registerName" type="text" placeholder="Jane Smith" autocomplete="name" />
+    </div>
+    <div class="form-group">
+      <label>Email</label>
+      <input class="form-control" id="registerEmail" type="email" placeholder="you@example.com" autocomplete="email" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input class="form-control" id="registerPassword" type="password" placeholder="At least 8 characters" autocomplete="new-password" />
+    </div>
+    <div class="form-group">
+      <label>Confirm Password</label>
+      <input class="form-control" id="registerConfirm" type="password" placeholder="Repeat your password" autocomplete="new-password" />
+    </div>
+    <div id="registerError" class="alert alert-error hidden" style="margin-bottom:12px"></div>
+    <button class="btn btn-primary" style="width:100%" id="registerBtn" onclick="submitRegister()">Create Account</button>
+    <p style="text-align:center;margin-top:16px;font-size:13px;color:var(--muted)">
+      Already have an account? <a href="#" onclick="showLoginCard();return false;" style="color:var(--primary);font-weight:500">Sign in</a>
+    </p>
   </div>
 </div>
 
@@ -136,6 +169,6 @@
 <!-- MODALS RENDERED HERE BY JS -->
 <div id="modalContainer"></div>
 
-<script src="app.js"></script>
+<script src="dist/app.js"></script>
 </body>
 </html>

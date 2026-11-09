@@ -4,10 +4,14 @@
   "description": "No-code QA test automation tool",
   "main": "server.js",
   "scripts": {
-    "start": "npx playwright install-deps chromium webkit 2>/dev/null; npx playwright install webkit 2>/dev/null; node server.js"
+    "build": "mkdir -p public/dist && npx terser public/app.js -o public/dist/app.js --compress --mangle && npx cleancss -o public/dist/style.css public/style.css && npx terser public/recorder.js -o public/dist/recorder.js --compress --mangle",
+    "start": "npm run build && npx playwright install-deps chromium webkit 2>/dev/null; npx playwright install webkit 2>/dev/null; node server.js"
   },
   "dependencies": {
+    "@aws-sdk/client-ses": "^3.1051.0",
+    "axe-core": "^4.14.0",
     "bcryptjs": "^3.0.3",
+    "compression": "^1.8.1",
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.2.1",
@@ -15,5 +19,9 @@
     "pixelmatch": "^7.1.0",
     "playwright": "^1.40.0",
     "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "clean-css-cli": "^5.6.3",
+    "terser": "^5.48.0"
   }
 }

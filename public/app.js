@@ -50,18 +50,25 @@ const STEP_TYPES = [
   { type: 'screenshot',      label: 'Screenshot',         desc: 'Capture screen' },
   { type: 'visualBaseline',  label: 'Visual Baseline',    desc: 'Compare screenshot' },
   { type: 'hover',           label: 'Hover',              desc: 'Hover over element' },
+  { type: 'checkElement',    label: 'Check Checkbox',     desc: 'Check a checkbox or radio' },
+  { type: 'runJS',           label: 'Run JavaScript',     desc: 'Execute JS on the page' },
   { type: 'selectOption',    label: 'Select Option',      desc: 'Choose from dropdown' },
   { type: 'pressKey',        label: 'Press Key',          desc: 'Keyboard key' },
   { type: 'scroll',          label: 'Scroll',             desc: 'Scroll page' },
   { type: 'scrollToElement', label: 'Scroll To Element',  desc: 'Scroll element into view' },
+  { type: 'scrollElement',   label: 'Scroll Element',     desc: 'Scroll within a container element' },
   { type: 'newTab',          label: 'New Tab',            desc: 'Click opens a new tab' },
   { type: 'fileDownload',      label: 'File Download',        desc: 'Verify download' },
   { type: 'assertPDFContains', label: 'Assert PDF Contains',  desc: 'Download PDF and check its text' },
   { type: 'assertInViewport',    label: 'Assert In Viewport',    desc: 'Verify element is scrolled into view' },
   { type: 'assertNoNavigation',  label: 'Assert No Navigation',  desc: 'Verify page did not reload or navigate' },
   { type: 'assertElementSize',   label: 'Assert Element Size',   desc: 'Check element height/width as % of viewport' },
+  { type: 'accessibilityScan',   label: 'Accessibility Scan',    desc: 'WCAG 2.2 AA check (axe-core) on the page or an element' },
+  { type: 'compareURLs',         label: 'Compare URLs',          desc: 'Pixel-diff this page against another live URL (e.g. dev vs prod)' },
   { type: 'switchFrame',         label: 'Switch Frame',          desc: 'Enter an iframe' },
   { type: 'exitFrame',       label: 'Exit Frame',         desc: 'Leave iframe' },
+  { type: 'closeTab',        label: 'Close Tab',          desc: 'Close current tab and return to previous' },
+  { type: 'switchToNewTab',  label: 'Switch to New Tab',  desc: 'Wait for and switch to a newly opened tab' },
   { type: 'useAction',       label: 'Use Action',         desc: 'Run a saved group of steps' }
 ];
 
@@ -86,7 +93,9 @@ async function api(method, path, body) {
     showAuthScreen();
     throw new Error('Session expired');
   }
-  const json = await r.json();
+  const text = await r.text();
+  let json;
+  try { json = JSON.parse(text); } catch { throw new Error(r.ok ? 'Invalid server response' : `Server error (${r.status})`); }
   if (!r.ok) throw new Error(json.error || `HTTP ${r.status}`);
   return json.data !== undefined ? json.data : json;
 }
@@ -204,11 +213,53 @@ async function submitLogin() {
   }
 }
 
-// Allow Enter key on login/setup forms
+function showLoginCard() {
+  document.getElementById('loginCard').classList.remove('hidden');
+  document.getElementById('registerCard').classList.add('hidden');
+  document.getElementById('loginEmail').focus();
+}
+
+function showRegisterCard() {
+  document.getElementById('registerCard').classList.remove('hidden');
+  document.getElementById('loginCard').classList.add('hidden');
+  document.getElementById('registerName').focus();
+}
+
+async function submitRegister() {
+  const name     = document.getElementById('registerName').value.trim();
+  const email    = document.getElementById('registerEmail').value.trim();
+  const password = document.getElementById('registerPassword').value;
+  const confirm  = document.getElementById('registerConfirm').value;
+  const errEl    = document.getElementById('registerError');
+  errEl.classList.add('hidden');
+
+  if (!name || !email || !password) { errEl.textContent = 'All fields are required.'; errEl.classList.remove('hidden'); return; }
+  if (password !== confirm) { errEl.textContent = 'Passwords do not match.'; errEl.classList.remove('hidden'); return; }
+  if (password.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; errEl.classList.remove('hidden'); return; }
+
+  const btn = document.getElementById('registerBtn');
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try {
+    const r = await fetch('/api/auth/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, email, password}) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Registration failed');
+    setToken(j.data.token);
+    state.currentUser = j.data.user;
+    hideAuthScreen();
+    startApp();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+    btn.disabled = false; btn.textContent = 'Create Account';
+  }
+}
+
+// Allow Enter key on login/setup/register forms
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   if (!document.getElementById('authScreen').classList.contains('hidden')) {
     if (!document.getElementById('setupCard').classList.contains('hidden')) submitSetup();
+    else if (!document.getElementById('registerCard').classList.contains('hidden')) submitRegister();
     else if (!document.getElementById('loginCard').classList.contains('hidden')) submitLogin();
   }
 });
@@ -291,7 +342,13 @@ async function startApp() {
   await loadProjects();
   renderProjectDropdown();
   updateEnvNavVisibility();
-  navigate('dashboard');
+  const hash = location.hash.replace(/^#/, '');
+  if (hash) {
+    const [page, params] = hash.split(':');
+    navigate(page, params);
+  } else {
+    navigate('dashboard');
+  }
 }
 
 async function loadProjects() {
@@ -345,6 +402,7 @@ async function loadEnvironments() {
 
 async function navigate(page, params) {
   state.currentPage = page;
+  location.hash = params ? `${page}:${params}` : page;
   document.querySelectorAll('.sidebar-nav button').forEach(b => b.classList.remove('active'));
   const navBtn = document.getElementById(`nav-${page.split('-')[0]}`);
   if (navBtn) navBtn.classList.add('active');
@@ -459,6 +517,7 @@ async function renderDashboard() {
       </div>
       <div style="display:flex;gap:8px">
         ${project ? `<button class="btn btn-secondary" onclick="openProjectModal('${project.id}')">Edit Project</button>` : ''}
+        ${project && (state.currentUser?.role === 'admin' || project.ownerId === state.currentUser?.id) ? `<button class="btn btn-danger" onclick="deleteProject('${project.id}')">Delete Project</button>` : ''}
         <button class="btn btn-primary" onclick="openScenarioBuilder(null)">+ New Scenario</button>
       </div>
     </div>
@@ -478,11 +537,6 @@ async function renderDashboard() {
         <div class="stat-label">Total Runs</div>
         <div class="stat-value">${totalRuns}</div>
         <div class="stat-sub">${lastRun ? 'last: ' + timeAgo(lastRun.startedAt) : 'no runs yet'}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Pass Rate</div>
-        <div class="stat-value" style="color:${passRate >= 80 ? 'var(--success)' : passRate >= 50 ? 'var(--warning)' : 'var(--error)'}">${passRate}%</div>
-        <div class="stat-sub">${passedRuns} of ${totalRuns} passed</div>
       </div>
     </div>
 
@@ -632,12 +686,11 @@ function renderScenarioCards(scenarios) {
         </div>
       </div>
       <div class="sc-actions">
-        <button class="btn btn-sm btn-ghost" onclick="openRunModal('scenario','${s.id}')" title="Run">▶ Run</button>
-        ${(s.variables && s.variables.length > 0) ? `<button class="btn btn-sm btn-ghost" onclick="openDataDrivenModal('${s.id}')" title="Run with CSV data" style="color:#7c3aed">⚡ Data</button>` : ''}
-        <button class="btn btn-sm btn-ghost" onclick="openAddToSuiteModal('${s.id}')" title="Add to Suite">📦</button>
-        <button class="btn btn-sm btn-ghost" onclick="openScenarioBuilder('${s.id}')" title="Edit">✏️</button>
-        <button class="btn btn-sm btn-ghost" onclick="cloneScenario('${s.id}')" title="Clone">⧉</button>
-        <button class="btn btn-sm btn-ghost" onclick="deleteScenario('${s.id}')" title="Delete" style="color:var(--error)">🗑️</button>
+        <button class="btn btn-sm btn-ghost" onclick="openRunModal('scenario','${s.id}')" data-tooltip="Run">▶ Run</button>
+        ${(s.variables && s.variables.length > 0) ? `<button class="btn btn-sm btn-ghost" onclick="openDataDrivenModal('${s.id}')" data-tooltip="Run with CSV data" style="color:#7c3aed">⚡ Data</button>` : ''}
+        <button class="btn btn-sm btn-ghost" onclick="openScenarioBuilder('${s.id}')" data-tooltip="Edit">✏️</button>
+        <button class="btn btn-sm btn-ghost" onclick="cloneScenario('${s.id}')" data-tooltip="Clone">⧉</button>
+        <button class="btn btn-sm btn-ghost" onclick="deleteScenario('${s.id}')" data-tooltip="Delete" style="color:var(--error)">🗑️</button>
       </div>
     </div>`;
   }).join('');
@@ -792,19 +845,26 @@ async function renderReports() {
     <div class="page-header">
       <div><h1>Reports</h1><div class="subtitle">${state.runs.length} run${state.runs.length !== 1 ? 's' : ''}</div></div>
     </div>
-    <div class="filter-bar">
-      <select class="form-control" id="reportStatusFilter" onchange="filterReports()">
-        <option value="">All statuses</option>
-        <option value="passed">Passed</option>
-        <option value="failed">Failed</option>
-        <option value="error">Error</option>
-      </select>
-      <select class="form-control" id="reportBrowserFilter" onchange="filterReports()">
-        <option value="">All browsers</option>
-        <option value="chromium">Chrome</option>
-        <option value="firefox">Firefox</option>
-        <option value="webkit">Safari</option>
-      </select>
+    <div class="filter-bar" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;gap:8px">
+        <select class="form-control" id="reportStatusFilter" onchange="filterReports()">
+          <option value="">All statuses</option>
+          <option value="passed">Passed</option>
+          <option value="failed">Failed</option>
+          <option value="error">Error</option>
+        </select>
+        <select class="form-control" id="reportBrowserFilter" onchange="filterReports()">
+          <option value="">All browsers</option>
+          <option value="chromium">Chrome</option>
+          <option value="firefox">Firefox</option>
+          <option value="webkit">Safari</option>
+        </select>
+      </div>
+      <div id="bulkActionsBar" style="display:none;align-items:center;gap:8px">
+        <span id="bulkSelectedCount" style="font-size:13px;color:var(--muted)"></span>
+        <button class="btn btn-sm btn-secondary" onclick="bulkEmailRuns()">Email Selected</button>
+        <button class="btn btn-sm btn-danger" onclick="bulkDeleteRuns()">Delete Selected</button>
+      </div>
     </div>
     <div class="table-wrapper" id="runsTable">
       ${renderRunsTable(state.runs)}
@@ -815,6 +875,7 @@ function renderRunsTable(runs) {
   if (runs.length === 0) return `<div style="padding:40px;text-align:center;color:var(--muted)">No results</div>`;
   return `<table>
     <thead><tr>
+      <th style="width:36px;padding:8px 4px 8px 12px"><input type="checkbox" id="selectAllRuns" onchange="toggleSelectAllRuns(this)" title="Select all"></th>
       <th style="width:60px">#</th>
       <th>Name</th>
       <th>Type</th>
@@ -829,6 +890,7 @@ function renderRunsTable(runs) {
     <tbody>
       ${runs.map(r => `
       <tr class="clickable" onclick="navigate('run-detail','${r.id}')">
+        <td style="padding:8px 4px 8px 12px" onclick="event.stopPropagation()"><input type="checkbox" class="run-checkbox" value="${r.id}" onchange="updateBulkBar()"></td>
         <td style="color:var(--muted);font-size:12px;font-weight:600">${r.jobNumber ? '#' + r.jobNumber : '—'}</td>
         <td>
           <strong>${esc(r.name)}</strong>
@@ -850,6 +912,7 @@ function renderRunsTable(runs) {
         <td>${r.duration ? (r.duration/1000).toFixed(1)+'s' : '—'}</td>
         <td style="display:flex;gap:4px">
           <button class="btn btn-xs btn-secondary" onclick="event.stopPropagation();shareReport('${r.id}')">Share</button>
+          <button class="btn btn-xs btn-secondary" onclick="event.stopPropagation();emailReport('${r.id}')">Email</button>
           <button class="btn btn-xs btn-danger" onclick="event.stopPropagation();deleteRun('${r.id}')">Delete</button>
         </td>
       </tr>`).join('')}
@@ -864,11 +927,103 @@ function filterReports() {
   if (status) filtered = filtered.filter(r => r.status === status);
   if (browser) filtered = filtered.filter(r => r.browser === browser);
   document.getElementById('runsTable').innerHTML = renderRunsTable(filtered);
+  updateBulkBar();
+}
+
+function toggleSelectAllRuns(cb) {
+  document.querySelectorAll('.run-checkbox').forEach(c => c.checked = cb.checked);
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const all = document.querySelectorAll('.run-checkbox');
+  const selected = document.querySelectorAll('.run-checkbox:checked');
+  const bar = document.getElementById('bulkActionsBar');
+  const countEl = document.getElementById('bulkSelectedCount');
+  const selectAll = document.getElementById('selectAllRuns');
+  if (bar) bar.style.display = selected.length > 0 ? 'flex' : 'none';
+  if (countEl) countEl.textContent = `${selected.length} selected`;
+  if (selectAll) {
+    selectAll.checked = all.length > 0 && selected.length === all.length;
+    selectAll.indeterminate = selected.length > 0 && selected.length < all.length;
+  }
+}
+
+function getSelectedRunIds() {
+  return [...document.querySelectorAll('.run-checkbox:checked')].map(c => c.value);
+}
+
+async function bulkDeleteRuns() {
+  const ids = getSelectedRunIds();
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} run${ids.length !== 1 ? 's' : ''}? This cannot be undone.`)) return;
+  try {
+    await POST('/api/runs/bulk-delete', { ids });
+    state.runs = state.runs.filter(r => !ids.includes(r.id));
+    toast(`Deleted ${ids.length} run${ids.length !== 1 ? 's' : ''}`, 'success');
+    await renderReports();
+  } catch (e) {
+    toast('Failed to delete: ' + e.message, 'error');
+  }
+}
+
+function bulkEmailRuns() {
+  const ids = getSelectedRunIds();
+  if (!ids.length) return;
+  const bodyHTML = `
+    <div class="form-group">
+      <label class="form-label">Recipient Email</label>
+      <input type="text" id="emailReportTo" class="form-control" placeholder="client@example.com, colleague@example.com" autofocus>
+      <div class="form-hint">Separate multiple addresses with a comma</div>
+    </div>
+    <div class="form-group" style="margin-top:12px">
+      <label class="form-label">Message <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+      <textarea id="emailReportMessage" class="form-control" rows="3" placeholder="Add a note to include in the email…" style="resize:vertical"></textarea>
+    </div>
+    <p style="font-size:13px;color:var(--muted);margin-top:8px">${ids.length} report${ids.length !== 1 ? 's' : ''} will be sent.</p>`;
+  openModal(`Email ${ids.length} Report${ids.length !== 1 ? 's' : ''}`, bodyHTML, 'modal-sm', async () => {
+    const to = document.getElementById('emailReportTo').value.trim();
+    const message = document.getElementById('emailReportMessage').value.trim();
+    if (!to) { toast('Please enter a recipient email', 'error'); return false; }
+    let sent = 0, failed = 0;
+    for (const id of ids) {
+      try { await POST(`/api/runs/${id}/email`, { to, message }); sent++; }
+      catch { failed++; }
+    }
+    if (failed === 0) toast(`Sent ${sent} report${sent !== 1 ? 's' : ''} to ${to}`, 'success');
+    else toast(`Sent ${sent}, failed to send ${failed}`, 'warning');
+  }, 'Send Reports');
 }
 
 function shareReport(runId) {
   const url = window.location.origin + '/report/' + runId;
   navigator.clipboard.writeText(url).then(() => toast('Report URL copied to clipboard', 'success'));
+}
+
+function emailReport(runId) {
+  const bodyHTML = `
+    <div class="form-group">
+      <label class="form-label">Recipient Email</label>
+      <input type="text" id="emailReportTo" class="form-control" placeholder="client@example.com, colleague@example.com" autofocus>
+      <div class="form-hint">Separate multiple addresses with a comma</div>
+    </div>
+    <div class="form-group" style="margin-top:12px">
+      <label class="form-label">Message <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+      <textarea id="emailReportMessage" class="form-control" rows="3" placeholder="Add a note to include in the email…" style="resize:vertical"></textarea>
+    </div>`;
+
+  openModal('Email Report', bodyHTML, 'modal-sm', async () => {
+    const to = document.getElementById('emailReportTo').value.trim();
+    const message = document.getElementById('emailReportMessage').value.trim();
+    if (!to) { toast('Please enter a recipient email', 'error'); return false; }
+    try {
+      await POST(`/api/runs/${runId}/email`, { to, message });
+    } catch (e) {
+      toast(e.message || 'Failed to send email', 'error');
+      return false;
+    }
+    toast('Report sent to ' + to, 'success');
+  }, 'Send Email');
 }
 
 async function deleteRun(id) {
@@ -909,7 +1064,7 @@ async function renderRunDetail(runId) {
           <div class="step-result-info">
             <div class="step-result-desc">${esc(step.description || step.type)}</div>
             ${step.message ? `<div class="step-result-msg">${esc(step.message)}</div>` : ''}
-            ${step.autoScreenshot && step.screenshot ? `<div class="step-screenshot" style="border:2px solid #ef4444;border-radius:6px;padding:4px;display:inline-block"><div style="font-size:11px;color:#ef4444;font-weight:600;margin-bottom:4px">Auto-captured on failure</div><img src="data:image/png;base64,${step.screenshot}" onclick="openImageLightbox(this)" style="border-radius:4px" /></div>` : ''}
+            ${step.autoScreenshot && step.screenshot ? `<div class="step-screenshot" style="border:2px solid #ef4444;border-radius:6px;padding:4px;display:inline-block"><div style="font-size:11px;color:#ef4444;font-weight:600;margin-bottom:4px">Auto-captured on failure</div><img src="${screenshotSrc(run.id, step.screenshot)}" onclick="openImageLightbox(this)" style="border-radius:4px" /></div>` : ''}
           </div>
           <div class="step-result-time">${step.duration || 0}ms</div>
         </div>`;
@@ -994,43 +1149,49 @@ async function renderRunDetail(runId) {
       // Regular screenshot
       let screenshotHTML = '';
       if (step.screenshot && !step.autoScreenshot) {
-        screenshotHTML = `<div class="step-screenshot"><img src="data:image/png;base64,${step.screenshot}" onclick="openImageLightbox(this)" title="Click to expand" /></div>`;
+        screenshotHTML = `<div class="step-screenshot"><img src="${screenshotSrc(run.id, step.screenshot)}" onclick="openImageLightbox(this)" title="Click to expand" /></div>`;
       }
       // Auto-captured screenshot on failure
       if (step.autoScreenshot && step.screenshot) {
         screenshotHTML = `<div class="step-screenshot" style="border:2px solid #ef4444;border-radius:6px;padding:4px;display:inline-block">
           <div style="font-size:11px;color:#ef4444;font-weight:600;margin-bottom:4px">Auto-captured on failure</div>
-          <img src="data:image/png;base64,${step.screenshot}" onclick="openImageLightbox(this)" title="Click to expand" style="border-radius:4px" />
+          <img src="${screenshotSrc(run.id, step.screenshot)}" onclick="openImageLightbox(this)" title="Click to expand" style="border-radius:4px" />
         </div>`;
       }
-      // Visual baseline comparison
+      // Visual baseline / cross-URL comparison
       let baselineHTML = '';
-      if (step.type === 'visualBaseline' && step.screenshot) {
+      if ((step.type === 'visualBaseline' || step.type === 'compareURLs') && step.screenshot) {
         const hasBaseline = !!step.baselineExists;
         const hasDiff = !!step.diffImage;
         if (hasDiff) {
           baselineHTML = `<div class="baseline-compare">
             <div>
-              <div class="baseline-img-label">Current</div>
-              <img src="data:image/png;base64,${step.screenshot}" onclick="openImageLightbox(this)" title="Current screenshot" style="width:100%;border-radius:4px;cursor:zoom-in" />
+              <div class="baseline-img-label">${step.type === 'compareURLs' ? 'This page' : 'Current'}</div>
+              <img src="${screenshotSrc(run.id, step.screenshot)}" onclick="openImageLightbox(this)" title="Current screenshot" style="width:100%;border-radius:4px;cursor:zoom-in" />
             </div>
             <div>
               <div class="baseline-img-label">Diff</div>
-              <img src="data:image/png;base64,${step.diffImage}" onclick="openImageLightbox(this)" title="Diff image" style="width:100%;border-radius:4px;cursor:zoom-in" />
+              <img src="${screenshotSrc(run.id, step.diffImage)}" onclick="openImageLightbox(this)" title="Diff image" style="width:100%;border-radius:4px;cursor:zoom-in" />
             </div>
           </div>
-          <div style="margin-top:6px">
+          ${step.type === 'visualBaseline' ? `<div style="margin-top:6px">
             <button class="baseline-reset-btn" onclick="resetBaseline('${run.id}', '${esc(step.params?.name || '')}')">Reset Baseline</button>
-          </div>`;
-        } else if (!hasBaseline) {
+          </div>` : ''}`;
+        } else if (step.type === 'visualBaseline' && !hasBaseline) {
           baselineHTML = `<div style="font-size:12px;color:#22c55e;margin-top:4px">Baseline captured for future comparisons.</div>
-            <div><img src="data:image/png;base64,${step.screenshot}" onclick="openImageLightbox(this)" title="Baseline" style="max-width:300px;border-radius:4px;cursor:zoom-in;margin-top:4px" /></div>`;
+            <div><img src="${screenshotSrc(run.id, step.screenshot)}" onclick="openImageLightbox(this)" title="Baseline" style="max-width:300px;border-radius:4px;cursor:zoom-in;margin-top:4px" /></div>`;
         } else {
           baselineHTML = `<div style="font-size:12px;color:var(--muted);margin-top:4px">
-            <img src="data:image/png;base64,${step.screenshot}" onclick="openImageLightbox(this)" title="Screenshot" style="max-width:300px;border-radius:4px;cursor:zoom-in" />
+            <img src="${screenshotSrc(run.id, step.screenshot)}" onclick="openImageLightbox(this)" title="Screenshot" style="max-width:300px;border-radius:4px;cursor:zoom-in" />
           </div>`;
         }
       }
+
+      const diagnoseHTML = step.status === 'failed' && run.type === 'scenario' ? `
+        <div style="margin-top:6px">
+          <button class="btn btn-xs btn-secondary" id="diagnose-btn-${run.id}-${i}" onclick="diagnoseStep('${run.id}',${i})">🔍 Diagnose</button>
+          <div id="diagnose-${run.id}-${i}" class="hidden" style="margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);font-size:12px"></div>
+        </div>` : '';
 
       return `<div class="step-result-row">
         <div class="step-result-num ${numClass}">${icon}</div>
@@ -1039,6 +1200,7 @@ async function renderRunDetail(runId) {
           ${step.message ? `<div class="step-result-msg">${esc(step.message)}</div>` : ''}
           ${screenshotHTML}
           ${baselineHTML}
+          ${diagnoseHTML}
         </div>
         <div class="step-result-time">${step.duration || 0}ms</div>
       </div>`;
@@ -1072,8 +1234,9 @@ async function renderRunDetail(runId) {
           <h1>${esc(run.name)}</h1>
         </div>
         <div style="display:flex;gap:8px">
-          ${run.type === 'suite' && run.suiteId && (run.summary?.failed ?? 0) > 0 ? `<button class="btn btn-primary btn-sm" onclick="rerunFailed('${run.id}')">↺ Re-run Failed (${run.summary.failed})</button>` : ''}
+          ${run.type === 'suite' && run.suiteId && (run.summary?.failed ?? 0) > 0 ? `<button class="btn btn-primary btn-sm" onclick="rerunFailed('${run.id}')">↺ Re-run Failed (${run.summary.failed})</button><button class="btn btn-secondary btn-sm" onclick="mergeRerun('${run.id}')">⤵ Merge Rerun</button>` : ''}
           <button class="btn btn-secondary btn-sm" onclick="shareReport('${run.id}')">🔗 Share Report</button>
+          <button class="btn btn-secondary btn-sm" onclick="emailReport('${run.id}')">✉️ Email Report</button>
           <a class="btn btn-secondary btn-sm" href="/report/${run.id}" target="_blank">📄 Open Report</a>
         </div>
       </div>
@@ -1110,6 +1273,37 @@ async function resetBaseline(runId, baselineName) {
     toast('Baseline reset — next run will create a fresh one');
   } catch (e) {
     toast(e.message, 'error');
+  }
+}
+
+async function diagnoseStep(runId, stepIndex) {
+  const btn = document.getElementById(`diagnose-btn-${runId}-${stepIndex}`);
+  const box = document.getElementById(`diagnose-${runId}-${stepIndex}`);
+  if (!box) return;
+
+  if (btn) { btn.disabled = true; btn.textContent = '🔍 Diagnosing…'; }
+  box.classList.remove('hidden');
+  box.innerHTML = '<span style="color:var(--muted)">Replaying up to this step and inspecting the live page…</span>';
+
+  try {
+    const result = await POST(`/api/runs/${runId}/steps/${stepIndex}/diagnose`);
+    if (result.needsKey) {
+      box.innerHTML = `<div class="alert alert-warning" style="margin:0"><strong>AI features require an API key.</strong><br>Set <code>ANTHROPIC_API_KEY</code> on the server.</div>`;
+      return;
+    }
+    let html = `<div>${esc(result.explanation)}</div>`;
+    if (result.hasSuggestion && result.suggestedSelector) {
+      html += `<div style="margin-top:8px;padding:8px;background:var(--surface);border-radius:4px">
+        <div style="font-weight:600;margin-bottom:4px">Suggested fix</div>
+        <code style="font-size:11px">selector: "${esc(result.suggestedSelector)}" · type: ${esc(result.suggestedSelectorType || 'css')}${result.suggestedNth !== undefined ? ` · nth: ${result.suggestedNth}` : ''}</code>
+        <div class="form-hint" style="margin-top:4px">Update this step's selector in the Scenario Builder to apply it.</div>
+      </div>`;
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = `<span style="color:var(--error)">Diagnosis failed: ${esc(e.message)}</span>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔍 Diagnose'; }
   }
 }
 
@@ -1472,8 +1666,27 @@ function updateTagPlaceholder() {
 
 let builderSteps = [];
 let builderScenarioId = null;
+let builderProjectId = null;
+let _dragSrcIndex = null;
+let _dragContext = null; // 'builder' | 'action'
 let activeBuilderTab = 'manual';
 let builderVariables = []; // [{ id, name, defaultValue, description }]
+
+function _draftKey(id) { return `scenario_draft_${id || 'new'}`; }
+function saveDraft() {
+  const draft = {
+    steps: builderSteps,
+    variables: builderVariables,
+    name: document.getElementById('sbName')?.value ?? null,
+    description: document.getElementById('sbDesc')?.value ?? null,
+    testType: document.getElementById('sbType')?.value ?? null,
+    savedAt: Date.now()
+  };
+  localStorage.setItem(_draftKey(builderScenarioId), JSON.stringify(draft));
+}
+let _draftSaveTimer = null;
+function saveDraftDebounced() { clearTimeout(_draftSaveTimer); _draftSaveTimer = setTimeout(saveDraft, 400); }
+function clearDraft(id) { localStorage.removeItem(_draftKey(id)); }
 let embeddedBrowser = null; // { id, url, width, height }
 let stepThroughSession = null; // { browserId, currentIndex, results[] }
 let stepThroughRunning = false;
@@ -1495,7 +1708,21 @@ async function openScenarioBuilder(scenarioId) {
 
   builderSteps = scenario ? JSON.parse(JSON.stringify(scenario.steps || [])) : [];
   builderVariables = scenario ? JSON.parse(JSON.stringify(scenario.variables || [])) : [];
+  builderProjectId = scenario?.projectId || state.currentProjectId || null;
   activeBuilderTab = 'manual';
+
+  // Restore any unsaved draft
+  try {
+    const raw = localStorage.getItem(_draftKey(scenarioId));
+    if (raw) {
+      const draft = JSON.parse(raw);
+      if (draft.steps && draft.steps.length > 0) {
+        builderSteps = draft.steps;
+        builderVariables = draft.variables || builderVariables;
+        setTimeout(() => toast('Draft restored — your unsaved changes have been recovered.', 'info'), 300);
+      }
+    }
+  } catch { /* ignore corrupt draft */ }
   if (stepThroughSession) { DEL(`/api/browser-sessions/${stepThroughSession.browserId}`).catch(() => {}); stepThroughSession = null; }
   stepThroughRunning = false;
 
@@ -1551,47 +1778,44 @@ async function openScenarioBuilder(scenarioId) {
 
     <div class="tabs">
       <button class="tab-btn active" id="tabManual" onclick="switchBuilderTab('manual')">🔧 Step Builder</button>
-      <button class="tab-btn" id="tabAI" onclick="switchBuilderTab('ai')">✨ AI Generate</button>
       <button class="tab-btn" id="tabRecord" onclick="switchBuilderTab('record')">🎬 Studio</button>
+      <button class="tab-btn" id="tabAgent" onclick="switchBuilderTab('agent')">🤖 AI Agent</button>
     </div>
 
     <div id="builderTabRecord" class="hidden">
       <div id="builderRecordingPanel"></div>
     </div>
 
+    <div id="builderTabAgent" class="hidden">
+      <div class="ai-panel">
+        <h3>🤖 AI Agent</h3>
+        <p>Tell it what to check in plain English and a starting URL. It will actually open the site, click around, and build the steps for you — review and save when it's done.</p>
+      </div>
+      <div class="form-group">
+        <label>Starting URL</label>
+        <input class="form-control" id="agentStartUrl" type="url" placeholder="https://example.com" value="${esc(state.projects.find(p => p.id === state.currentProjectId)?.baseUrl || '')}" />
+      </div>
+      <div class="form-group">
+        <label>What should it check?</label>
+        <textarea class="form-control" id="agentInstruction" placeholder="e.g. Go to https://tryngolza.com/ and ensure the dropdown menus go to the correct pages" style="min-height:90px"></textarea>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+        <button class="btn btn-primary" id="agentRunBtn" onclick="startAiAgent()">▶ Run Agent</button>
+        <button class="btn btn-secondary hidden" id="agentStopBtn" onclick="stopAiAgent()">✕ Stop</button>
+      </div>
+      <div id="agentStatus" class="hidden"></div>
+      <div id="agentLog" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;font-size:12px;background:var(--surface2)"></div>
+    </div>
+
     <div id="builderTabManual">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div style="font-size:13px;font-weight:600;color:var(--muted)">Steps</div>
-        <button class="btn btn-xs btn-secondary" onclick="openSaveStepsAsActionModal()" title="Save selected steps as a reusable action">♻️ Save steps as Action</button>
+        <button class="btn btn-xs btn-secondary" onclick="openSaveStepsAsActionModal()" data-tooltip="Save selected steps as a reusable action">♻️ Save steps as Action</button>
       </div>
       <div class="step-list" id="builderStepList"></div>
       <button class="btn btn-secondary" onclick="openAddStepPicker()">+ Add Step</button>
     </div>
 
-    <div id="builderTabAI" class="hidden">
-      <div class="ai-panel">
-        <h3>✨ AI Step Generation</h3>
-        <p>Describe what your test should do in plain English, and Claude will generate the steps for you.</p>
-      </div>
-      <div class="form-group">
-        <label>Describe your test in plain English</label>
-        <textarea class="form-control" id="aiDescription" placeholder="e.g. Go to the login page, enter the email test@example.com and password wrongpass, click Login, and verify an error message appears saying 'Invalid credentials'" style="min-height:120px"></textarea>
-      </div>
-      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
-        <button class="btn btn-primary" id="aiGenerateBtn" onclick="generateStepsWithAI()">✨ Generate Steps</button>
-        <div id="aiSpinner" class="hidden"><div class="ai-generating"><div class="spinner"></div> Generating steps…</div></div>
-      </div>
-      <div id="aiPreview" class="hidden">
-        <div class="alert alert-info" style="margin-bottom:12px">
-          ✅ Steps generated! Review them below, then click <strong>Use These Steps</strong> to add them to your scenario, or <strong>Regenerate</strong> to try again.
-        </div>
-        <div id="aiPreviewList" style="margin-bottom:12px"></div>
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-primary" onclick="useAISteps()">✓ Use These Steps</button>
-          <button class="btn btn-secondary" onclick="generateStepsWithAI()">↺ Regenerate</button>
-        </div>
-      </div>
-    </div>
   `;
 
   openModal(
@@ -1616,10 +1840,12 @@ async function openScenarioBuilder(scenarioId) {
         if (scenario) {
           const updated = await PUT(`/api/scenarios/${scenario.id}`, data);
           state.scenarios = state.scenarios.map(s => s.id === scenario.id ? updated : s);
+          clearDraft(scenario.id);
           toast('Scenario saved', 'success');
         } else {
           const created = await POST('/api/scenarios', data);
           state.scenarios.push(created);
+          clearDraft(null);
           toast('Scenario created', 'success');
         }
         navigate(state.currentPage);
@@ -1650,7 +1876,7 @@ function renderBuilderVariables() {
         style="flex:1;min-width:80px" onchange="updateBuilderVar(${idx},'name',this.value)" />
       <input class="form-control" type="${inputType}" placeholder="${placeholder}" value="${esc(v.defaultValue || '')}"
         style="flex:2;min-width:120px" onchange="updateBuilderVar(${idx},'defaultValue',this.value)" />
-      <button class="btn btn-xs ${isSecret ? 'btn-primary' : 'btn-ghost'}" title="${isSecret ? 'Secret (encrypted)' : 'Plain text — click to make secret'}"
+      <button class="btn btn-xs ${isSecret ? 'btn-primary' : 'btn-ghost'}" data-tooltip="${isSecret ? 'Secret (encrypted)' : 'Plain text — click to make secret'}"
         style="flex-shrink:0;font-size:14px" onclick="toggleBuilderVarSecret(${idx})">${isSecret ? '🔒' : '🔓'}</button>
       <button class="btn btn-xs btn-ghost" style="color:var(--error);flex-shrink:0" onclick="deleteBuilderVar(${idx})">🗑</button>
     </div>`;
@@ -1686,11 +1912,11 @@ function deleteBuilderVar(idx) {
 function switchBuilderTab(tab) {
   activeBuilderTab = tab;
   document.getElementById('tabManual').classList.toggle('active', tab === 'manual');
-  document.getElementById('tabAI').classList.toggle('active', tab === 'ai');
   document.getElementById('tabRecord').classList.toggle('active', tab === 'record');
+  document.getElementById('tabAgent').classList.toggle('active', tab === 'agent');
   document.getElementById('builderTabManual').classList.toggle('hidden', tab !== 'manual');
-  document.getElementById('builderTabAI').classList.toggle('hidden', tab !== 'ai');
   document.getElementById('builderTabRecord').classList.toggle('hidden', tab !== 'record');
+  document.getElementById('builderTabAgent').classList.toggle('hidden', tab !== 'agent');
   if (tab === 'record') renderBuilderRecordingPanel();
 }
 
@@ -1698,6 +1924,7 @@ function renderBuilderRecordingPanel() {
   const panel = document.getElementById('builderRecordingPanel');
   if (!panel) return;
 
+  const prevScroll = document.getElementById('studioStepList')?.scrollTop ?? 0;
   const stepListHTML = renderStudioStepList();
   const hasBrowser = !!embeddedBrowser;
   const projectBaseUrl = state.projects.find(p => p.id === state.currentProjectId)?.baseUrl || '';
@@ -1710,10 +1937,14 @@ function renderBuilderRecordingPanel() {
 
   const browserHTML = hasBrowser ? `
     <div style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;height:100%">
+      <div id="embeddedTabBar" style="display:flex;gap:2px;padding:4px 8px 0;background:var(--surface-2,#f1f5f9);border-bottom:1px solid var(--border);flex-shrink:0;min-height:28px;align-items:flex-end">
+        <div id="embeddedTabList" style="display:flex;gap:2px;flex:1;overflow-x:auto"></div>
+        <button class="btn btn-xs btn-ghost" onclick="refreshEmbeddedTabs()" data-tooltip="Refresh tab list" style="font-size:11px;padding:2px 6px;margin-bottom:2px">⟳ Tabs</button>
+      </div>
       <div style="display:flex;gap:6px;align-items:center;padding:6px 8px;background:var(--surface-2,#f1f5f9);border-bottom:1px solid var(--border);flex-shrink:0">
-        <button class="btn btn-xs btn-ghost" title="Click to record" onclick="setEmbeddedMode('click')" id="modeBtnClick" style="font-size:15px;padding:2px 5px">👆</button>
-        <button class="btn btn-xs btn-ghost" title="Type text" onclick="setEmbeddedMode('type')" id="modeBtnType" style="font-size:15px;padding:2px 5px">⌨️</button>
-        <button class="btn btn-xs btn-ghost" title="Assert visible" onclick="setEmbeddedMode('assert')" id="modeBtnAssert" style="font-size:15px;padding:2px 5px">✅</button>
+        <button class="btn btn-xs btn-ghost" data-tooltip="Click to record" onclick="setEmbeddedMode('click')" id="modeBtnClick" style="font-size:15px;padding:2px 5px">👆</button>
+        <button class="btn btn-xs btn-ghost" data-tooltip="Type text" onclick="setEmbeddedMode('type')" id="modeBtnType" style="font-size:15px;padding:2px 5px">⌨️</button>
+        <button class="btn btn-xs btn-ghost" data-tooltip="Assert visible" onclick="setEmbeddedMode('assert')" id="modeBtnAssert" style="font-size:15px;padding:2px 5px">✅</button>
         <div style="width:1px;height:20px;background:var(--border);margin:0 2px"></div>
         <input class="form-control" id="embeddedUrlBar" type="url" value="${esc(embeddedBrowser.url)}"
           style="flex:1;height:28px;font-size:12px;padding:2px 8px"
@@ -1767,6 +1998,13 @@ function renderBuilderRecordingPanel() {
       </div>
     </div>`;
 
+  const suggestStepHTML = hasBrowser ? `
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <input class="form-control" id="suggestStepInput" type="text" placeholder="✨ Describe a step… e.g. click the submit button"
+        style="flex:1;font-size:12px" onkeydown="if(event.key==='Enter')suggestStep()" />
+      <button class="btn btn-xs btn-primary" id="suggestStepBtn" onclick="suggestStep()">Suggest</button>
+    </div>` : '';
+
   panel.innerHTML = `
     <div style="display:grid;grid-template-columns:290px 1fr;gap:12px;align-items:start">
       <!-- Left: step list -->
@@ -1775,6 +2013,7 @@ function renderBuilderRecordingPanel() {
           <div style="font-size:13px;font-weight:600">Steps <span style="color:var(--muted);font-weight:400">(${builderSteps.length})</span></div>
           <button class="btn btn-xs btn-secondary" onclick="openAddStepPicker()">+ Add Step</button>
         </div>
+        ${suggestStepHTML}
         <div id="studioStepList" style="flex:1;overflow-y:auto;max-height:400px;margin-bottom:8px">${stepListHTML}</div>
         ${stepThroughHTML}
       </div>
@@ -1783,6 +2022,8 @@ function renderBuilderRecordingPanel() {
     </div>`;
 
   if (hasBrowser) setEmbeddedMode(embeddedBrowserTypeMode ? 'type' : 'click');
+  const studioList = document.getElementById('studioStepList');
+  if (studioList && prevScroll) studioList.scrollTop = prevScroll;
 }
 
 function renderStudioStepList() {
@@ -1797,22 +2038,34 @@ function renderStudioStepList() {
     else if (stResult?.status === 'failed') statusIcon = `<span style="color:var(--error);width:14px;display:inline-block;text-align:center">✗</span>`;
     else if (isCurrent) statusIcon = `<span style="color:var(--primary);width:14px;display:inline-block;text-align:center">▶</span>`;
     return `
-      <div id="studio-step-${i}" style="border:1px solid ${isCurrent ? 'var(--primary)' : 'var(--border)'};border-radius:6px;margin-bottom:4px;background:${isCurrent ? 'var(--primary-light,#eff6ff)' : 'var(--surface)'}">
+      <div id="studio-step-${i}" draggable="true"
+        ondragstart="stepDragStart(event,${i},'studio')"
+        ondragover="stepDragOver(event,${i},'studio')"
+        ondrop="stepDrop(event,${i},'studio')"
+        ondragend="stepDragEnd(event,'studio')"
+        style="border:1px solid ${isCurrent ? 'var(--primary)' : 'var(--border)'};border-radius:6px;margin-bottom:4px;background:${isCurrent ? 'var(--primary-light,#eff6ff)' : 'var(--surface)'};cursor:grab">
         <div style="display:flex;align-items:center;gap:5px;padding:5px 6px">
+          <span style="color:var(--muted);font-size:12px;cursor:grab;flex-shrink:0" data-tooltip="Drag to reorder">⠿</span>
           ${statusIcon}
           <span class="step-type-badge step-type-${step.type}" style="font-size:10px;flex-shrink:0">${step.type}</span>
-          <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)" title="${esc(stepDescription(step))}">${esc(stepDescription(step))}</span>
+          <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)" data-tooltip="${esc(stepDescription(step))}">${esc(stepDescription(step))}</span>
           <div style="display:flex;gap:1px;flex-shrink:0">
-            <button class="btn btn-xs btn-ghost" onclick="studioToggleEdit(${i})" title="Edit" style="padding:1px 4px">✏️</button>
-            <button class="btn btn-xs btn-ghost" onclick="studioMoveStep(${i},-1)" title="Move up" style="padding:1px 4px" ${i===0?'disabled':''}>↑</button>
-            <button class="btn btn-xs btn-ghost" onclick="studioMoveStep(${i},1)" title="Move down" style="padding:1px 4px" ${i===builderSteps.length-1?'disabled':''}>↓</button>
-            <button class="btn btn-xs btn-ghost" onclick="studioDeleteStep(${i})" title="Delete" style="padding:1px 4px;color:var(--error)">×</button>
+            <button class="btn btn-xs btn-ghost" onclick="studioStartFromStep(${i})" data-tooltip="Start playback from this step" style="padding:1px 4px;color:var(--primary)">▶</button>
+            <button class="btn btn-xs btn-ghost" onclick="studioToggleEdit(${i})" data-tooltip="Edit" style="padding:1px 4px">✏️</button>
+            <button class="btn btn-xs btn-ghost" onclick="studioDuplicateStep(${i})" data-tooltip="Duplicate step" style="padding:1px 4px">⧉</button>
+            <button class="btn btn-xs btn-ghost" onclick="studioDeleteStep(${i})" data-tooltip="Delete" style="padding:1px 4px;color:var(--error)">×</button>
           </div>
         </div>
         <div id="studio-edit-${i}" class="hidden" style="padding:8px;border-top:1px solid var(--border)">
           ${stepParamsForm(step, i)}
         </div>
-        ${stResult?.status === 'failed' ? `<div style="padding:4px 8px;font-size:11px;color:var(--error);border-top:1px solid var(--border)">${esc(stResult.message)}</div>` : ''}
+        ${stResult?.status === 'failed' ? `<div style="padding:4px 8px;border-top:1px solid var(--border)" ondragstart="event.stopPropagation()">
+          <div style="display:flex;align-items:flex-start;gap:6px">
+            <div style="flex:1;font-size:11px;color:var(--error);user-select:text;cursor:text">${esc(stResult.message)}</div>
+            <button class="btn btn-xs btn-secondary" id="studio-diagnose-btn-${i}" onclick="studioDiagnoseStep(${i})" style="flex-shrink:0">🔍 Diagnose</button>
+          </div>
+          <div id="studio-diagnose-${i}" class="hidden" style="margin-top:6px;font-size:11px;padding:6px 8px;background:var(--surface2);border-radius:4px"></div>
+        </div>` : ''}
       </div>`;
   }).join('');
 }
@@ -1820,6 +2073,13 @@ function renderStudioStepList() {
 function studioToggleEdit(i) {
   const el = document.getElementById(`studio-edit-${i}`);
   if (el) el.classList.toggle('hidden');
+}
+
+function studioDuplicateStep(i) {
+  const copy = JSON.parse(JSON.stringify(builderSteps[i]));
+  copy.id = 'step_' + Date.now();
+  builderSteps.splice(i + 1, 0, copy);
+  refreshStudio();
 }
 
 function studioMoveStep(i, dir) {
@@ -1858,7 +2118,11 @@ function renderStudioControls() {
 
 function refreshStudio() {
   const list = document.getElementById('studioStepList');
-  if (list) list.innerHTML = renderStudioStepList();
+  if (list) {
+    const top = list.scrollTop;
+    list.innerHTML = renderStudioStepList();
+    list.scrollTop = top;
+  }
   const controls = document.getElementById('studioStepThroughControls');
   if (controls) controls.innerHTML = renderStudioControls();
   renderBuilderSteps();
@@ -1901,6 +2165,23 @@ async function studioStartStepThrough() {
   renderBuilderRecordingPanel();
 }
 
+async function studioStartFromStep(index) {
+  if (embeddedBrowser) {
+    stepThroughSession = { browserId: embeddedBrowser.id, currentIndex: index - 1, results: [] };
+  } else {
+    try {
+      const data = await POST('/api/browser-sessions', { url: '', viewportWidth: 1280, viewportHeight: 800 });
+      embeddedBrowser = { id: data.id, url: data.url, screenshot: data.screenshot, width: 1280, height: 800 };
+      stepThroughSession = { browserId: data.id, currentIndex: index - 1, results: [] };
+    } catch (e) {
+      toast('Failed to start browser: ' + e.message, 'error');
+      return;
+    }
+  }
+  renderBuilderRecordingPanel();
+  await studioStepNext();
+}
+
 async function studioStepNext() {
   if (!stepThroughSession || stepThroughRunning) return;
   const nextIndex = stepThroughSession.currentIndex + 1;
@@ -1910,7 +2191,18 @@ async function studioStepNext() {
   refreshStudio();
   try {
     const step = builderSteps[nextIndex];
-    const data = await POST(`/api/browser-sessions/${stepThroughSession.browserId}/execute-step`, { step });
+    // Build vars: project baseUrl + scenario variables
+    const vars = {};
+    const projId = builderProjectId || document.getElementById('sbProject')?.value || state.currentProjectId;
+    const proj = state.projects.find(p => p.id === projId);
+    if (proj?.baseUrl) vars.baseUrl = proj.baseUrl;
+    for (const v of (builderVariables || [])) {
+      if (v.name && v.defaultValue) {
+        const cleanName = v.name.replace(/^\{\{|\}\}$/g, '');
+        vars[cleanName] = v.defaultValue;
+      }
+    }
+    const data = await POST(`/api/browser-sessions/${stepThroughSession.browserId}/execute-step`, { step, vars });
     stepThroughSession.results[nextIndex] = { status: data.status, message: data.message };
     if (data.screenshot && embeddedBrowser) {
       embeddedBrowser.screenshot = data.screenshot;
@@ -1925,6 +2217,50 @@ async function studioStepNext() {
   }
   stepThroughRunning = false;
   refreshStudio();
+}
+
+async function studioDiagnoseStep(index) {
+  if (!stepThroughSession) return;
+  const btn = document.getElementById(`studio-diagnose-btn-${index}`);
+  const box = document.getElementById(`studio-diagnose-${index}`);
+  if (!box) return;
+
+  if (btn) { btn.disabled = true; btn.textContent = '🔍 Diagnosing…'; }
+  box.classList.remove('hidden');
+  box.innerHTML = '<span style="color:var(--muted)">Inspecting the live page…</span>';
+
+  try {
+    const step = builderSteps[index];
+    const vars = {};
+    const projId = builderProjectId || document.getElementById('sbProject')?.value || state.currentProjectId;
+    const proj = state.projects.find(p => p.id === projId);
+    if (proj?.baseUrl) vars.baseUrl = proj.baseUrl;
+    for (const v of (builderVariables || [])) {
+      if (v.name && v.defaultValue) {
+        const cleanName = v.name.replace(/^\{\{|\}\}$/g, '');
+        vars[cleanName] = v.defaultValue;
+      }
+    }
+    const failureMessage = stepThroughSession.results?.[index]?.message || '';
+    const result = await POST(`/api/browser-sessions/${stepThroughSession.browserId}/diagnose-step`, { step, vars, failureMessage });
+    if (result.needsKey) {
+      box.innerHTML = `<div class="alert alert-warning" style="margin:0"><strong>AI features require an API key.</strong><br>Set <code>ANTHROPIC_API_KEY</code> on the server.</div>`;
+      return;
+    }
+    let html = `<div>${esc(result.explanation)}</div>`;
+    if (result.hasSuggestion && result.suggestedSelector) {
+      html += `<div style="margin-top:8px;padding:8px;background:var(--surface);border-radius:4px">
+        <div style="font-weight:600;margin-bottom:4px">Suggested fix</div>
+        <code style="font-size:11px">selector: "${esc(result.suggestedSelector)}" · type: ${esc(result.suggestedSelectorType || 'css')}${result.suggestedNth !== undefined ? ` · nth: ${result.suggestedNth}` : ''}</code>
+        <div class="form-hint" style="margin-top:4px">Update this step's selector above to apply it.</div>
+      </div>`;
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = `<span style="color:var(--error)">Diagnosis failed: ${esc(e.message)}</span>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔍 Diagnose'; }
+  }
 }
 
 function studioStepPrev() {
@@ -1951,6 +2287,7 @@ async function startEmbeddedBrowser() {
     const data = await POST('/api/browser-sessions', { url, viewportWidth: 1280, viewportHeight: 800 });
     embeddedBrowser = { id: data.id, url: data.url, screenshot: data.screenshot, width: 1280, height: 800 };
     renderBuilderRecordingPanel();
+    setTimeout(refreshEmbeddedTabs, 500);
   } catch (e) {
     toast('Could not open browser: ' + e.message, 'error');
     if (btn) { btn.disabled = false; btn.textContent = 'Open'; }
@@ -1963,6 +2300,70 @@ function stopEmbeddedBrowser() {
   embeddedBrowser = null;
   embeddedBrowserTypeMode = false;
   renderBuilderRecordingPanel();
+}
+
+async function refreshEmbeddedTabs() {
+  if (!embeddedBrowser) return;
+  try {
+    const data = await GET(`/api/browser-sessions/${embeddedBrowser.id}/tabs`);
+    const tabList = document.getElementById('embeddedTabList');
+    if (!tabList) return;
+    tabList.innerHTML = data.tabs.map(t => `
+      <div style="display:flex;align-items:center;border:1px solid var(--border);border-bottom:none;border-radius:4px 4px 0 0;
+                  background:${t.active ? '#fff' : 'var(--surface-2,#f1f5f9)'};overflow:hidden">
+        <button onclick="switchEmbeddedTab(${t.index})" data-tooltip="${esc(t.url)}"
+          style="padding:2px 8px;font-size:11px;font-weight:${t.active ? '600' : 'normal'};border:none;background:transparent;cursor:pointer;white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis">
+          ${esc((t.title || t.url).substring(0, 28))}
+        </button>
+        <button onclick="closeEmbeddedTab(${t.index},event)" data-tooltip="Close tab"
+          style="padding:0 5px;font-size:13px;line-height:1;border:none;background:transparent;cursor:pointer;color:#94a3b8;flex-shrink:0" >×</button>
+      </div>`).join('');
+  } catch {}
+}
+
+async function closeEmbeddedTab(index, e) {
+  e.stopPropagation();
+  if (!embeddedBrowser) return;
+  await POST(`/api/browser-sessions/${embeddedBrowser.id}/close-tab`, { index }).catch(() => {});
+  refreshEmbeddedTabs();
+  // Refresh screenshot in case we closed the active tab
+  const data = await GET(`/api/browser-sessions/${embeddedBrowser.id}/tabs`).catch(() => null);
+  if (data) {
+    const active = data.tabs.find(t => t.active);
+    if (active) {
+      const shot = await POST(`/api/browser-sessions/${embeddedBrowser.id}/switch-tab`, { index: active.index }).catch(() => null);
+      if (shot?.screenshot) {
+        embeddedBrowser.screenshot = shot.screenshot;
+        embeddedBrowser.url = shot.url;
+        const img = document.getElementById('embeddedShot');
+        if (img) img.src = 'data:image/jpeg;base64,' + shot.screenshot;
+        const bar = document.getElementById('embeddedUrlBar');
+        if (bar) bar.value = shot.url;
+      }
+    }
+  }
+  refreshEmbeddedTabs();
+}
+
+async function switchEmbeddedTab(index) {
+  if (!embeddedBrowser) return;
+  const data = await POST(`/api/browser-sessions/${embeddedBrowser.id}/switch-tab`, { index });
+  if (data.error) { toast(data.error, 'error'); return; }
+  embeddedBrowser.screenshot = data.screenshot;
+  embeddedBrowser.url = data.url;
+  const img = document.getElementById('embeddedShot');
+  if (img) img.src = 'data:image/jpeg;base64,' + data.screenshot;
+  const bar = document.getElementById('embeddedUrlBar');
+  if (bar) bar.value = data.url;
+  refreshEmbeddedTabs();
+
+  // Add a switchToNewTab step — separate from the click step
+  builderSteps.push({
+    id: 'step_' + Date.now(),
+    type: 'switchToNewTab',
+    params: { assertURLContains: data.url }
+  });
+  renderBuilderSteps();
 }
 
 async function embeddedNavigate() {
@@ -2027,19 +2428,27 @@ function showEmbeddedCommandPalette(x, y, clientX, clientY, elInfo) {
   document.getElementById('embeddedCtxMenu')?.remove();
 
   const ALL_COMMANDS = [
-    { group: 'Interactions', icon: '👆', label: 'Click',            action: () => sendEmbeddedAction({ type: 'click', x, y }) },
-    { group: 'Interactions', icon: '👆👆', label: 'Double Click',   action: () => sendEmbeddedAction({ type: 'dblclick', x, y }) },
-    { group: 'Interactions', icon: '🖱', label: 'Hover',            action: () => sendEmbeddedAction({ type: 'hover', x, y }) },
-    { group: 'Interactions', icon: '⌨️', label: 'Type Text…',      action: () => embeddedPromptThenAction('Type text to enter', '', v => sendEmbeddedAction({ type: 'type', text: v, x, y })) },
-    { group: 'Interactions', icon: '🗑', label: 'Clear Field',      action: () => sendEmbeddedAction({ type: 'clear', x, y }) },
-    { group: 'Interactions', icon: '↩', label: 'Press Enter',       action: () => sendEmbeddedAction({ type: 'key', key: 'Enter' }) },
-    { group: 'Interactions', icon: '📜', label: 'Scroll Down',      action: () => sendEmbeddedAction({ type: 'scroll', y: 300 }) },
-    { group: 'Interactions', icon: '📜', label: 'Scroll Up',        action: () => sendEmbeddedAction({ type: 'scroll', y: -300 }) },
-    { group: 'Assertions',   icon: '✅', label: 'Assert Visible',   action: () => sendEmbeddedAction({ type: 'assert_visible', x, y }) },
-    { group: 'Assertions',   icon: '🚫', label: 'Assert Not Visible', action: () => sendEmbeddedAction({ type: 'assert_not_visible', x, y }) },
-    { group: 'Assertions',   icon: '📝', label: 'Assert Text…',     action: () => embeddedPromptThenAction('Assert element contains text', elInfo?.innerText || '', v => sendEmbeddedAction({ type: 'assert_text', text: v, x, y })) },
-    { group: 'Assertions',   icon: '🔗', label: 'Assert URL…',      action: () => embeddedPromptThenAction('Assert page URL contains', embeddedBrowser?.url || '', v => sendEmbeddedAction({ type: 'assert_url', text: v })) },
-    { group: 'Other',        icon: '📸', label: 'Take Screenshot',  action: () => sendEmbeddedAction({ type: 'action_screenshot' }) },
+    { group: 'Interactions', icon: '👆', label: 'Click',               action: () => sendEmbeddedAction({ type: 'click', x, y }) },
+    { group: 'Interactions', icon: '👆👆', label: 'Double Click',      action: () => sendEmbeddedAction({ type: 'dblclick', x, y }) },
+    { group: 'Interactions', icon: '🖱', label: 'Hover',               action: () => sendEmbeddedAction({ type: 'hover', x, y }) },
+    { group: 'Interactions', icon: '⌨️', label: 'Type Text…',         action: () => embeddedPromptThenAction('Type text to enter', '', v => sendEmbeddedAction({ type: 'type', text: v, x, y })) },
+    { group: 'Interactions', icon: '🗑', label: 'Clear Field',         action: () => sendEmbeddedAction({ type: 'clear', x, y }) },
+    { group: 'Interactions', icon: '↩', label: 'Press Enter',          action: () => sendEmbeddedAction({ type: 'key', key: 'Enter' }) },
+    { group: 'Interactions', icon: '☑️', label: 'Check Checkbox',     action: () => { if (elInfo) { builderSteps.push({ id: 'step_'+Date.now(), type: 'checkElement', params: { selector: elInfo.selector, selectorType: elInfo.selectorType || 'css' } }); renderBuilderSteps(); } } },
+    { group: 'Interactions', icon: '📜', label: 'Scroll Down',         action: () => sendEmbeddedAction({ type: 'scroll', y: 300 }) },
+    { group: 'Interactions', icon: '📜', label: 'Scroll Up',           action: () => sendEmbeddedAction({ type: 'scroll', y: -300 }) },
+    { group: 'Interactions', icon: '📜', label: 'Scroll To Element',   action: () => { if (elInfo) { builderSteps.push({ id: 'step_'+Date.now(), type: 'scrollToElement', params: { selector: elInfo.selector, selectorType: elInfo.selectorType || 'css' } }); renderBuilderSteps(); } } },
+    { group: 'Tabs',         icon: '🗂', label: 'New Tab (click link)', action: () => { if (elInfo) { builderSteps.push({ id: 'step_'+Date.now(), type: 'newTab', params: { selector: elInfo.selector, selectorType: elInfo.selectorType || 'css' } }); renderBuilderSteps(); } } },
+    { group: 'Tabs',         icon: '↪️', label: 'Switch to New Tab',   action: () => { builderSteps.push({ id: 'step_'+Date.now(), type: 'switchToNewTab', params: { assertURLContains: '' } }); renderBuilderSteps(); } },
+    { group: 'Tabs',         icon: '✖️', label: 'Close Tab',           action: () => { builderSteps.push({ id: 'step_'+Date.now(), type: 'closeTab', params: {} }); renderBuilderSteps(); } },
+    { group: 'Assertions',   icon: '✅', label: 'Assert Visible',      action: () => sendEmbeddedAction({ type: 'assert_visible', x, y }) },
+    { group: 'Assertions',   icon: '🚫', label: 'Assert Not Visible',  action: () => sendEmbeddedAction({ type: 'assert_not_visible', x, y }) },
+    { group: 'Assertions',   icon: '📝', label: 'Assert Text…',        action: () => embeddedPromptThenAction('Assert element contains text', elInfo?.innerText || '', v => sendEmbeddedAction({ type: 'assert_text', text: v, x, y })) },
+    { group: 'Assertions',   icon: '🔗', label: 'Assert URL…',         action: () => embeddedPromptThenAction('Assert page URL contains', embeddedBrowser?.url || '', v => sendEmbeddedAction({ type: 'assert_url', text: v })) },
+    { group: 'Assertions',   icon: '🎨', label: 'Assert CSS…',         action: () => embeddedPromptThenAction('CSS property (e.g. border-color)', 'border-color', prop => embeddedPromptThenAction('Expected value', '', val => { if (elInfo) { builderSteps.push({ id: 'step_'+Date.now(), type: 'assertCSS', params: { selector: elInfo.selector, selectorType: elInfo.selectorType || 'css', property: prop, value: val, matchType: 'exact' } }); renderBuilderSteps(); } })) },
+    { group: 'Other',        icon: '📸', label: 'Take Screenshot',     action: () => sendEmbeddedAction({ type: 'action_screenshot' }) },
+    { group: 'Other',        icon: '⏱', label: 'Wait 2 seconds',       action: () => { builderSteps.push({ id: 'step_'+Date.now(), type: 'waitSeconds', params: { seconds: 2 } }); renderBuilderSteps(); } },
+    { group: 'Other',        icon: '🔧', label: 'Run JavaScript…',      action: () => embeddedPromptThenAction('JavaScript to run', '', v => { builderSteps.push({ id: 'step_'+Date.now(), type: 'runJS', params: { script: v } }); renderBuilderSteps(); }) },
   ];
 
   const elTag = elInfo ? `<${elInfo.tagName}>` : '';
@@ -2053,7 +2462,7 @@ function showEmbeddedCommandPalette(x, y, clientX, clientY, elInfo) {
 
   const menu = document.createElement('div');
   menu.id = 'embeddedCtxMenu';
-  menu.style.cssText = `position:fixed;left:${left}px;top:${top}px;width:${paletteW}px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.2);z-index:9999;font-size:13px;overflow:hidden;display:flex;flex-direction:column`;
+  menu.style.cssText = `position:fixed;left:${left}px;top:${top}px;width:${paletteW}px;background:#ffffff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.35);z-index:9999;font-size:13px;overflow:hidden;display:flex;flex-direction:column`;
 
   let lastGroup = '';
   const rows = ALL_COMMANDS.map((cmd, idx) => {
@@ -2237,6 +2646,9 @@ async function sendEmbeddedAction(action) {
       builderSteps.push(...stepsToAdd);
       renderBuilderSteps();
     }
+    // Always refresh tab bar shortly after a click — new tabs open async
+    refreshEmbeddedTabs();
+    setTimeout(refreshEmbeddedTabs, 2000);
     return data;
   } catch (e) {
     toast('Browser action failed: ' + e.message, 'error');
@@ -2247,18 +2659,65 @@ async function sendEmbeddedAction(action) {
   }
 }
 
+async function suggestStep() {
+  const input = document.getElementById('suggestStepInput');
+  const instruction = input?.value.trim();
+  if (!instruction || !embeddedBrowser) return;
+
+  const btn = document.getElementById('suggestStepBtn');
+  if (btn) btn.disabled = true;
+  const overlay = document.getElementById('embeddedOverlay');
+  if (overlay) overlay.style.display = 'flex';
+
+  try {
+    const data = await POST(`/api/browser-sessions/${embeddedBrowser.id}/suggest-step`, { instruction });
+    if (data.needsKey) {
+      toast('AI not configured. Add ANTHROPIC_API_KEY to your environment.', 'error');
+      return;
+    }
+    if (data.screenshot) {
+      embeddedBrowser.screenshot = data.screenshot;
+      embeddedBrowser.url = data.url;
+      const shot = document.getElementById('embeddedShot');
+      if (shot) shot.src = 'data:image/jpeg;base64,' + data.screenshot;
+      const bar = document.getElementById('embeddedUrlBar');
+      if (bar) bar.value = data.url;
+    }
+    if (data.error) {
+      toast(data.error, 'error');
+      return;
+    }
+    builderSteps.push(data.step);
+    refreshStudio();
+    if (input) input.value = '';
+    toast('Step added: ' + stepDescription(data.step), 'success');
+  } catch (e) {
+    toast('Suggest step failed: ' + e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+    if (overlay) overlay.style.display = 'none';
+  }
+}
+
 function renderBuilderSteps() {
   const list = document.getElementById('builderStepList');
   if (list) {
+    const top = list.scrollTop;
     if (builderSteps.length === 0) {
       list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--muted);border:2px dashed var(--border);border-radius:var(--radius)">No steps yet. Add a step below or use AI to generate them.</div>`;
     } else {
       list.innerHTML = builderSteps.map((step, i) => stepItemHTML(step, i)).join('');
     }
+    list.scrollTop = top;
   }
   // Keep studio list in sync if open
   const studioList = document.getElementById('studioStepList');
-  if (studioList) studioList.innerHTML = renderStudioStepList();
+  if (studioList) {
+    const top = studioList.scrollTop;
+    studioList.innerHTML = renderStudioStepList();
+    studioList.scrollTop = top;
+  }
+  saveDraft();
 }
 
 function stepItemHTML(step, i) {
@@ -2280,9 +2739,9 @@ function stepItemHTML(step, i) {
         <span class="step-desc"><strong>${esc(params.actionName || '(choose action)')}</strong></span>
         ${action ? `<span style="font-size:11px;color:var(--muted);flex-shrink:0">${stepCount} step${stepCount !== 1 ? 's' : ''}</span>` : ''}
         <div class="step-actions" onclick="event.stopPropagation()">
-          ${i > 0 ? `<button class="btn btn-xs btn-ghost" onclick="moveStep(${i},-1)" title="Move up">↑</button>` : ''}
-          ${i < builderSteps.length - 1 ? `<button class="btn btn-xs btn-ghost" onclick="moveStep(${i},1)" title="Move down">↓</button>` : ''}
-          <button class="btn btn-xs btn-ghost" style="color:var(--error)" onclick="deleteStep(${i})" title="Delete">✕</button>
+          ${i > 0 ? `<button class="btn btn-xs btn-ghost" onclick="moveStep(${i},-1)" data-tooltip="Move up">↑</button>` : ''}
+          ${i < builderSteps.length - 1 ? `<button class="btn btn-xs btn-ghost" onclick="moveStep(${i},1)" data-tooltip="Move down">↓</button>` : ''}
+          <button class="btn btn-xs btn-ghost" style="color:var(--error)" onclick="deleteStep(${i})" data-tooltip="Delete">✕</button>
         </div>
       </div>
       <div class="step-body hidden" id="step-body-${i}">
@@ -2295,15 +2754,21 @@ function stepItemHTML(step, i) {
     </div>`;
   }
 
-  return `<div class="step-item" id="step-item-${i}">
+  return `<div class="step-item" id="step-item-${i}" draggable="true"
+    ondragstart="stepDragStart(event,${i},'builder')"
+    ondragover="stepDragOver(event,${i},'builder')"
+    ondrop="stepDrop(event,${i},'builder')"
+    ondragend="stepDragEnd(event,'builder')"
+    style="cursor:grab">
     <div class="step-header" onclick="toggleStepExpand(${i})">
+      <span style="color:var(--muted);font-size:14px;padding:0 4px;cursor:grab;flex-shrink:0" data-tooltip="Drag to reorder">⠿</span>
       <span class="step-num">${i + 1}</span>
       <span class="step-type-badge step-type-${step.type}">${step.type}</span>
       <span class="step-desc">${esc(desc)}</span>
       <div class="step-actions" onclick="event.stopPropagation()">
-        ${i > 0 ? `<button class="btn btn-xs btn-ghost" onclick="moveStep(${i},-1)" title="Move up">↑</button>` : ''}
-        ${i < builderSteps.length - 1 ? `<button class="btn btn-xs btn-ghost" onclick="moveStep(${i},1)" title="Move down">↓</button>` : ''}
-        <button class="btn btn-xs btn-ghost" style="color:var(--error)" onclick="deleteStep(${i})" title="Delete">✕</button>
+        <button class="btn btn-xs btn-ghost" onclick="openAddStepPicker(${i + 1})" data-tooltip="Add step below">+</button>
+        <button class="btn btn-xs btn-ghost" onclick="duplicateStep(${i})" data-tooltip="Duplicate step">⧉</button>
+        <button class="btn btn-xs btn-ghost" style="color:var(--error)" onclick="deleteStep(${i})" data-tooltip="Delete">✕</button>
       </div>
     </div>
     <div class="step-body hidden" id="step-body-${i}">
@@ -2315,6 +2780,54 @@ function stepItemHTML(step, i) {
 function toggleStepExpand(i) {
   const body = document.getElementById(`step-body-${i}`);
   if (body) body.classList.toggle('hidden');
+}
+
+
+function stepDragStart(e, i, ctx) {
+  _dragSrcIndex = i;
+  _dragContext = ctx;
+  e.dataTransfer.effectAllowed = 'move';
+  e.currentTarget.style.opacity = '0.4';
+}
+
+function stepDragOver(e, i, ctx) {
+  if (ctx !== _dragContext || i === _dragSrcIndex) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const prefix = ctx === 'action' ? 'ab-' : ctx === 'studio' ? 'studio-' : '';
+  const idBase = ctx === 'studio' ? 'step' : 'step-item';
+  document.querySelectorAll(`[id^="${prefix}${idBase}-"]`).forEach(el => el.style.borderTop = '');
+  const target = document.getElementById(`${prefix}${idBase}-${i}`);
+  if (target) target.style.borderTop = '2px solid var(--primary)';
+}
+
+function stepDrop(e, i, ctx) {
+  e.preventDefault();
+  if (ctx !== _dragContext || i === _dragSrcIndex || _dragSrcIndex === null) return;
+  if (ctx === 'builder') {
+    const [moved] = builderSteps.splice(_dragSrcIndex, 1);
+    builderSteps.splice(i, 0, moved);
+    renderBuilderSteps();
+  } else if (ctx === 'studio') {
+    const [moved] = builderSteps.splice(_dragSrcIndex, 1);
+    builderSteps.splice(i, 0, moved);
+    refreshStudio();
+  } else {
+    const [moved] = actionBuilderSteps.splice(_dragSrcIndex, 1);
+    actionBuilderSteps.splice(i, 0, moved);
+    renderActionBuilderSteps();
+  }
+  _dragSrcIndex = null;
+}
+
+function stepDragEnd(_e, ctx) {
+  _dragSrcIndex = null;
+  const prefix = ctx === 'action' ? 'ab-' : ctx === 'studio' ? 'studio-' : '';
+  const idBase = ctx === 'studio' ? 'step' : 'step-item';
+  document.querySelectorAll(`[id^="${prefix}${idBase}-"]`).forEach(el => {
+    el.style.opacity = '';
+    el.style.borderTop = '';
+  });
 }
 
 function stepParamsForm(step, i) {
@@ -2341,9 +2854,11 @@ function stepParamsForm(step, i) {
       return `<div class="form-group"><label>URL</label><input class="form-control" type="url" value="${esc(p.url || '')}" onchange="updateStepParam(${i},'url',this.value)" placeholder="https://example.com" /></div>`;
 
     case 'click':
+      return selectorField() + `<div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer"><input type="checkbox" ${p.force ? 'checked' : ''} onchange="updateStepParam(${i},'force',this.checked)" /> Force click (bypasses visibility check — use for hidden/styled checkboxes)</label></div><div class="form-group"><label class="form-label">Match index <span style="color:var(--muted);font-weight:400">(if multiple elements match, 0 = first)</span></label><input class="form-control" type="number" min="0" placeholder="0" value="${p.nth !== undefined && p.nth !== '' ? p.nth : ''}" onchange="updateStepParam(${i},'nth',this.value===''?undefined:parseInt(this.value))" style="width:80px" /></div>`;
     case 'assertVisible':
     case 'hover':
-      return selectorField();
+    case 'checkElement':
+      return selectorField() + (step.type === 'assertVisible' ? `<div class="form-group"><label class="form-label">Match index <span style="color:var(--muted);font-weight:400">(if multiple elements match, 0 = first)</span></label><input class="form-control" type="number" min="0" placeholder="0" value="${p.nth !== undefined && p.nth !== '' ? p.nth : ''}" onchange="updateStepParam(${i},'nth',this.value===''?undefined:parseInt(this.value))" style="width:80px" /></div>` : '');
 
     case 'type':
       return selectorField() + `<div class="form-group"><label>Text to Type</label><input class="form-control" type="text" value="${esc(p.value || '')}" onchange="updateStepParam(${i},'value',this.value)" placeholder="Text to enter" /></div>`;
@@ -2357,7 +2872,8 @@ function stepParamsForm(step, i) {
             <option value="true" ${p.contains !== false ? 'selected' : ''}>Contains (partial match)</option>
             <option value="false" ${p.contains === false ? 'selected' : ''}>Exact match</option>
           </select>
-        </div>`;
+        </div>
+        ${p.selectorType !== 'page' ? `<div class="form-group"><label class="form-label">Match index <span style="color:var(--muted);font-weight:400">(if multiple elements match, 0 = first)</span></label><input class="form-control" type="number" min="0" placeholder="0" value="${p.nth !== undefined && p.nth !== '' ? p.nth : ''}" onchange="updateStepParam(${i},'nth',this.value===''?undefined:parseInt(this.value))" style="width:80px" /></div>` : ''}`;
 
     case 'waitForElement':
       return selectorField() + `<div class="form-group"><label>Timeout (ms)</label><input class="form-control" type="number" value="${p.timeout || 5000}" onchange="updateStepParam(${i},'timeout',parseInt(this.value))" /></div>`;
@@ -2383,6 +2899,15 @@ function stepParamsForm(step, i) {
             <option value="to-element" ${p.direction === 'to-element' ? 'selected' : ''}>To Element</option>
           </select></div>
         <div class="form-group"><label>Pixels (for up/down)</label><input class="form-control" type="number" value="${p.pixels || 300}" onchange="updateStepParam(${i},'pixels',parseInt(this.value))" /></div>`;
+
+    case 'scrollElement':
+      return selectorField('Container Selector') + `
+        <div class="form-group"><label>Direction</label>
+          <select class="form-control" onchange="updateStepParam(${i},'direction',this.value)">
+            <option value="down" ${(p.direction || 'down') === 'down' ? 'selected' : ''}>Down</option>
+            <option value="up" ${p.direction === 'up' ? 'selected' : ''}>Up</option>
+          </select></div>
+        <div class="form-group"><label>Pixels</label><input class="form-control" type="number" value="${p.pixels || 300}" onchange="updateStepParam(${i},'pixels',parseInt(this.value))" /><div class="form-hint">Scrolls inside the element, not the whole page. Use this for sticky banners, modals, or any element with its own scroll.</div></div>`;
 
     case 'assertURL':
       return `
@@ -2430,6 +2955,9 @@ function stepParamsForm(step, i) {
     case 'waitSeconds':
       return `<div class="form-group"><label>Seconds</label><input class="form-control" type="number" min="1" max="60" step="1" value="${p.seconds || 3}" onchange="updateStepParam(${i},'seconds',parseInt(this.value)||1)" /></div>`;
 
+    case 'runJS':
+      return `<div class="form-group"><label>JavaScript</label><textarea class="form-control" rows="4" style="font-family:monospace;font-size:13px" onchange="updateStepParam(${i},'script',this.value)" placeholder="document.querySelector('#edit-age-18').click();">${esc(p.script || '')}</textarea><div class="form-hint">Runs in the browser. Use document.querySelector() to target elements.</div></div>`;
+
     case 'visualBaseline':
       return `
         <div class="form-group"><label>Baseline Name</label><input class="form-control" type="text" value="${esc(p.name || '')}" onchange="updateStepParam(${i},'name',this.value)" placeholder="e.g. homepage-hero" /></div>
@@ -2439,7 +2967,9 @@ function stepParamsForm(step, i) {
       return selectorField('Click Target Selector') + `
         <div class="form-group"><label>Assert New Tab URL (optional, exact)</label><input class="form-control" type="text" value="${esc(p.assertURL || '')}" onchange="updateStepParam(${i},'assertURL',this.value)" placeholder="https://..." /></div>
         <div class="form-group"><label>Assert New Tab URL Contains (optional)</label><input class="form-control" type="text" value="${esc(p.assertURLContains || '')}" onchange="updateStepParam(${i},'assertURLContains',this.value)" placeholder="checkout" /></div>
-        <div class="form-group"><label>Assert New Tab Contains Text (optional)</label><input class="form-control" type="text" value="${esc(p.assertText || '')}" onchange="updateStepParam(${i},'assertText',this.value)" placeholder="Page title or body text" /></div>`;
+        <div class="form-group"><label>Assert New Tab Contains Text (optional)</label><input class="form-control" type="text" value="${esc(p.assertText || '')}" onchange="updateStepParam(${i},'assertText',this.value)" placeholder="Page title or body text" /></div>
+        <div class="form-group"><label>Assert New Tab PDF Contains (optional)</label><input class="form-control" type="text" value="${esc(p.assertPDFText || '')}" onchange="updateStepParam(${i},'assertPDFText',this.value)" placeholder="Text that should appear in the PDF" /></div>
+        <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer"><input type="checkbox" ${p.switchToTab ? 'checked' : ''} onchange="updateStepParam(${i},'switchToTab',this.checked)" /> Switch to new tab (subsequent steps run in the new tab)</label></div>`;
 
     case 'fileDownload':
       return selectorField('Download Link Selector') + `
@@ -2487,8 +3017,37 @@ function stepParamsForm(step, i) {
     case 'exitFrame':
       return `<div class="text-muted text-sm">No parameters needed — exits the current iframe context.</div>`;
 
+    case 'closeTab':
+      return `<div class="text-muted text-sm">Closes the current tab and returns subsequent steps to the previous tab.</div>`;
+
+    case 'switchToNewTab':
+      return `<div class="form-group"><label>Assert URL Contains (optional)</label><input class="form-control" type="text" value="${esc(p.assertURLContains || '')}" onchange="updateStepParam(${i},'assertURLContains',this.value)" placeholder="e.g. tryngolza.com" /></div>
+              <div class="form-hint">Waits up to 8s for a new tab to open, then switches to it. Place this immediately after the click that opens the tab.</div>`;
+
     case 'useAction':
       return `<div class="text-muted text-sm">Action reference — use the expand view above to inspect steps.</div>`;
+
+    case 'accessibilityScan':
+      return `
+        <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer"><input type="checkbox" ${p.selector !== undefined ? 'checked' : ''} onchange="toggleStepElementScope(${i},this.checked)" /> Scope to one element (leave unchecked to scan the whole page)</label></div>
+        ${p.selector !== undefined ? selectorField('Element to scope the scan to') : ''}
+        <div class="form-group"><label>Fail on</label>
+          <select class="form-control" onchange="updateStepParam(${i},'failOn',this.value)">
+            <option value="serious" ${(p.failOn || 'serious') === 'serious' ? 'selected' : ''}>Serious or Critical (recommended)</option>
+            <option value="critical" ${p.failOn === 'critical' ? 'selected' : ''}>Critical only</option>
+            <option value="moderate" ${p.failOn === 'moderate' ? 'selected' : ''}>Moderate or above</option>
+            <option value="minor" ${p.failOn === 'minor' ? 'selected' : ''}>Any violation (incl. Minor)</option>
+          </select>
+        </div>
+        <div class="form-hint">Runs a real axe-core scan (WCAG 2.2 AA) in the browser. A pass means no mechanical failures were found at this severity — not full conformance. Lower-severity violations and "needs manual review" items are still reported, just not failed.</div>`;
+
+    case 'compareURLs':
+      return `
+        <div class="form-group"><label>Compare Against URL</label><input class="form-control" type="url" value="${esc(p.compareUrl || '')}" onchange="updateStepParam(${i},'compareUrl',this.value)" placeholder="https://prod.example.com/same/path" /><div class="form-hint">Use {{variableName}} to insert a variable — e.g. an environment's base URL</div></div>
+        <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer"><input type="checkbox" ${p.selector !== undefined ? 'checked' : ''} onchange="toggleStepElementScope(${i},this.checked)" /> Scope to one element (leave unchecked to compare the full page)</label></div>
+        ${p.selector !== undefined ? selectorField('Element to compare') : ''}
+        <div class="form-group"><label>Sensitivity Threshold</label><input class="form-control" type="number" min="0" max="1" step="0.01" value="${p.threshold ?? 0.1}" onchange="updateStepParam(${i},'threshold',parseFloat(this.value))" /><div class="form-hint">Lower = stricter. Fails when more than this fraction of pixels differ (default 0.1 = 10%).</div></div>
+        <div class="form-hint">Screenshots this page and the URL above, then pixel-diffs them. Runs in a separate tab, so it won't disturb this scenario's own navigation.</div>`;
 
     default:
       return `<div class="text-muted text-sm">No parameters for this step type.</div>`;
@@ -2508,6 +3067,21 @@ function updateStepParam(index, key, value) {
     const span = studioItem.querySelector('span[title]');
     if (span) { span.textContent = stepDescription(builderSteps[index]); span.title = stepDescription(builderSteps[index]); }
   }
+  saveDraftDebounced();
+}
+
+function toggleStepElementScope(index, scoped) {
+  const step = builderSteps[index];
+  if (!step) return;
+  step.params = step.params || {};
+  if (scoped) {
+    step.params.selector = '';
+    step.params.selectorType = 'css';
+  } else {
+    delete step.params.selector;
+    delete step.params.selectorType;
+  }
+  renderBuilderSteps();
 }
 
 function moveStep(i, dir) {
@@ -2522,12 +3096,20 @@ function deleteStep(i) {
   renderBuilderSteps();
 }
 
-function openAddStepPicker() {
+function duplicateStep(i) {
+  const copy = JSON.parse(JSON.stringify(builderSteps[i]));
+  copy.id = 'step_' + Date.now();
+  builderSteps.splice(i + 1, 0, copy);
+  renderBuilderSteps();
+}
+
+function openAddStepPicker(insertAt) {
+  const idx = insertAt != null ? insertAt : null;
   const html = `
     <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Choose the type of step to add:</p>
     <div class="step-type-picker">
       ${STEP_TYPES.map(st => `
-      <div class="step-type-option" onclick="addStep('${st.type}')">
+      <div class="step-type-option" onclick="addStep('${st.type}',${idx != null ? idx : 'null'})">
         <div class="sto-label">${st.label}</div>
         <div class="sto-desc">${st.desc}</div>
       </div>`).join('')}
@@ -2549,12 +3131,12 @@ function openAddStepPicker() {
   document.body.appendChild(overlay);
 }
 
-function addStep(type) {
+function addStep(type, insertAt) {
   const overlay = document.getElementById('stepPickerOverlay');
   if (overlay) overlay.remove();
 
   if (type === 'useAction') {
-    openActionPickerForStep();
+    openActionPickerForStep(insertAt);
     return;
   }
 
@@ -2574,10 +3156,15 @@ function addStep(type) {
     screenshot:       { name: '' },
     visualBaseline:   { name: '', threshold: 0.1 },
     hover:            { selector: '', selectorType: 'css' },
+    checkElement:     { selector: '', selectorType: 'css' },
+    runJS:            { script: '' },
+    closeTab:         {},
+    switchToNewTab:   { assertURLContains: '' },
     selectOption:     { selector: '', selectorType: 'css', value: '' },
     pressKey:         { key: 'Enter' },
     scroll:           { direction: 'down', pixels: 300 },
     scrollToElement:  { selector: '', selectorType: 'css' },
+    scrollElement:    { selector: '', selectorType: 'css', direction: 'down', pixels: 300 },
     newTab:           { selector: '', selectorType: 'text', assertURL: '', assertURLContains: '', assertText: '' },
     fileDownload:     { selector: '', selectorType: 'text', expectedFilename: '' },
     switchFrame:        { selector: '', selectorType: 'css' },
@@ -2586,20 +3173,21 @@ function addStep(type) {
     assertElementSize:  { selector: '', dimension: 'height', expected: null, tolerance: 2 }
   };
 
-  builderSteps.push({
-    id: 'step_' + Date.now(),
-    type,
-    params: defaults[type] || {}
-  });
+  const newStep = { id: 'step_' + Date.now(), type, params: defaults[type] || {} };
+  if (insertAt != null && insertAt >= 0 && insertAt <= builderSteps.length) {
+    builderSteps.splice(insertAt, 0, newStep);
+  } else {
+    builderSteps.push(newStep);
+  }
 
   renderBuilderSteps();
 
   // Auto-expand the new step
   setTimeout(() => {
-    const last = builderSteps.length - 1;
-    const body = document.getElementById(`step-body-${last}`);
+    const idx = insertAt != null ? insertAt : builderSteps.length - 1;
+    const body = document.getElementById(`step-body-${idx}`);
     if (body) body.classList.remove('hidden');
-    const item = document.getElementById(`step-item-${last}`);
+    const item = document.getElementById(`step-item-${idx}`);
     if (item) item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, 50);
 }
@@ -2673,8 +3261,8 @@ function stepDescription(step) {
     case 'click':            return `Click "${p.selector || '(selector)'}"`;
     case 'type':             return `Type "${p.value || ''}" into "${p.selector || '(selector)'}"`;
     case 'clearField':       return `Clear field "${p.selector || '(selector)'}"`;
-    case 'assertText':       return p.selectorType === 'page' ? `Page contains "${p.text || ''}"` : `"${p.selector || ''}" contains "${p.text || ''}"`;
-    case 'assertVisible':    return `"${p.selector || '(selector)'}" is visible`;
+    case 'assertText':       return p.selectorType === 'page' ? `Page contains "${p.text || ''}"` : `"${p.selector || ''}"${p.nth !== undefined && p.nth !== '' ? ` [${p.nth}]` : ''} contains "${p.text || ''}"`;
+    case 'assertVisible':    return `"${p.selector || '(selector)'}"${p.nth !== undefined && p.nth !== '' ? ` [${p.nth}]` : ''} is visible`;
     case 'assertNotVisible': return `"${p.selector || '(selector)'}" is NOT visible`;
     case 'assertURL':        return `URL ${p.matchType || 'contains'} "${p.url || ''}"`;
     case 'assertAttribute':  return `"${p.selector || ''}" attr "${p.attribute || ''}" ${p.matchType || 'exact'} "${p.value || ''}"`;
@@ -2685,94 +3273,130 @@ function stepDescription(step) {
     case 'screenshot':       return `Take screenshot "${p.name || ''}"`;
     case 'visualBaseline':   return `Visual baseline "${p.name || ''}"`;
     case 'hover':            return `Hover over "${p.selector || '(selector)'}"`;
+    case 'checkElement':     return `Check checkbox "${p.selector || '(selector)'}"`;
+    case 'runJS':            return `Run JS: ${(p.script || '').substring(0, 40) || '(script)'}`;
     case 'selectOption':     return `Select "${p.value || ''}" from "${p.selector || '(selector)'}"`;
     case 'pressKey':         return `Press ${p.key || 'Enter'}`;
     case 'scroll':           return `Scroll ${p.direction || 'down'} ${p.pixels ? p.pixels + 'px' : ''}`;
     case 'scrollToElement':  return `Scroll to "${p.selector || '(selector)'}"`;
+    case 'scrollElement':    return `Scroll "${p.selector || '(selector)'}" ${p.direction || 'down'} ${p.pixels ? p.pixels + 'px' : ''}`;
     case 'newTab':           return `Open new tab via "${p.selector || '(selector)'}"`;
     case 'fileDownload':        return `Download file via "${p.selector || '(selector)'}"`;
     case 'assertPDFContains':   return `Assert PDF contains "${p.expectedText || '(text)'}"`;
     case 'assertInViewport':     return `Assert "${p.selector || '(selector)'}" is in viewport`;
     case 'assertNoNavigation':   return `Assert no navigation/reload (${p.waitMs || 1000}ms)`;
     case 'assertElementSize':    return `Assert "${p.selector || '(selector)'}" ${p.dimension || 'height'} = ${p.expected ?? '?'}% ±${p.tolerance ?? 2}%`;
+    case 'accessibilityScan':    return `Accessibility scan (WCAG 2.2 AA)${p.selector ? ` on "${p.selector}"` : ' on full page'}${p.failOn && p.failOn !== 'serious' ? `, fail on ${p.failOn}+` : ''}`;
+    case 'compareURLs':          return `Compare this page vs "${p.compareUrl || '(url)'}"${p.selector ? ` on "${p.selector}"` : ''}`;
     case 'switchFrame':         return `Switch to iframe "${p.selector || '(selector)'}"`;
     case 'exitFrame':        return 'Exit iframe (return to main page)';
+    case 'closeTab':         return 'Close current tab';
+    case 'switchToNewTab':   return `Switch to new tab${p.assertURLContains ? ` (URL contains "${p.assertURLContains}")` : ''}`;
     case 'useAction':        return `Use Action: ${p.actionName || '(choose action)'}`;
     default:                 return step.type;
   }
 }
 
-// ─── AI GENERATION ────────────────────────────────────────────────────────────
+// ─── AI AGENT (LIVE BROWSER) ──────────────────────────────────────────────────
 
-let aiGeneratedSteps = [];
+let activeAgentSession = null; // { id, cancelled }
 
-async function generateStepsWithAI() {
-  const desc = document.getElementById('aiDescription').value.trim();
-  if (!desc) { toast('Please describe your test first', 'error'); return; }
+function agentLogLine(text, cls) {
+  const log = document.getElementById('agentLog');
+  if (!log) return;
+  const row = document.createElement('div');
+  if (cls) row.style.color = `var(--${cls})`;
+  row.textContent = text;
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+}
 
-  const testType = document.getElementById('sbType')?.value || 'functional';
-  const project = state.projects.find(p => p.id === (document.getElementById('sbProject')?.value || state.currentProjectId));
-  const baseUrl = project?.baseUrl || '';
+function setAgentStatus(html) {
+  const el = document.getElementById('agentStatus');
+  if (!el) return;
+  if (!html) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  el.classList.remove('hidden');
+  el.innerHTML = html;
+}
 
-  document.getElementById('aiGenerateBtn').disabled = true;
-  document.getElementById('aiSpinner').classList.remove('hidden');
-  document.getElementById('aiPreview').classList.add('hidden');
+async function startAiAgent() {
+  const instruction = document.getElementById('agentInstruction').value.trim();
+  if (!instruction) { toast('Describe what the agent should check first', 'error'); return; }
+  const startUrl = document.getElementById('agentStartUrl').value.trim();
 
+  document.getElementById('agentRunBtn').disabled = true;
+  document.getElementById('agentStopBtn').classList.remove('hidden');
+  document.getElementById('agentLog').innerHTML = '';
+  setAgentStatus('<div class="alert alert-info">🤖 Starting the agent…</div>');
+
+  let sessionId;
   try {
-    const result = await POST('/api/ai/generate-steps', { description: desc, testType, baseUrl });
-
+    const result = await POST('/api/ai-agent-sessions', { instruction, startUrl });
     if (result.needsKey) {
       toast('AI not configured. Add ANTHROPIC_API_KEY to your environment.', 'error');
-      showAIKeyInstructions();
+      setAgentStatus(`<div class="alert alert-warning"><strong>AI features require an API key.</strong><br>Set the <code>ANTHROPIC_API_KEY</code> environment variable before starting the server.</div>`);
+      resetAgentButtons();
       return;
     }
-
-    if (!Array.isArray(result)) throw new Error('Invalid response from AI');
-
-    aiGeneratedSteps = result;
-    renderAIPreview(result);
-    document.getElementById('aiPreview').classList.remove('hidden');
-    toast(`Generated ${result.length} steps`, 'success');
+    sessionId = result.id;
   } catch (e) {
-    toast('AI generation failed: ' + e.message, 'error');
-  } finally {
-    document.getElementById('aiGenerateBtn').disabled = false;
-    document.getElementById('aiSpinner').classList.add('hidden');
+    toast('Failed to start agent: ' + e.message, 'error');
+    setAgentStatus('');
+    resetAgentButtons();
+    return;
+  }
+
+  activeAgentSession = { id: sessionId, cancelled: false };
+  setAgentStatus('<div class="alert alert-info">🤖 Agent is exploring the site…</div>');
+
+  let since = 0;
+  while (activeAgentSession && activeAgentSession.id === sessionId && !activeAgentSession.cancelled) {
+    await new Promise(r => setTimeout(r, 1200));
+    if (!activeAgentSession || activeAgentSession.cancelled) break;
+    let data;
+    try {
+      data = await GET(`/api/ai-agent-sessions/${sessionId}/events?since=${since}`);
+    } catch (e) {
+      agentLogLine('Connection error while polling the agent.', 'error');
+      break;
+    }
+    for (const event of data.events) handleAgentEvent(event);
+    since += data.events.length;
+    if (data.done) break;
+  }
+
+  activeAgentSession = null;
+  resetAgentButtons();
+}
+
+function handleAgentEvent(event) {
+  if (event.type === 'log') {
+    agentLogLine(event.message);
+  } else if (event.type === 'step') {
+    builderSteps.push(event.step);
+    renderBuilderSteps();
+    if (activeBuilderTab === 'record') refreshStudio();
+  } else if (event.type === 'error') {
+    agentLogLine('⚠️ ' + event.message, 'error');
+  } else if (event.type === 'done') {
+    setAgentStatus(`<div class="alert alert-info">✅ Done — ${builderSteps.length} step${builderSteps.length === 1 ? '' : 's'} added. Review them in <strong>🔧 Step Builder</strong>, then save.</div>`);
+    toast('AI Agent finished building the test', 'success');
   }
 }
 
-function renderAIPreview(steps) {
-  const list = document.getElementById('aiPreviewList');
-  list.innerHTML = `<div style="background:var(--light-bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
-    ${steps.map((step, i) => `
-    <div style="padding:10px 14px;${i < steps.length - 1 ? 'border-bottom:1px solid var(--border)' : ''};display:flex;align-items:center;gap:10px">
-      <span style="color:var(--muted);font-size:12px;width:20px">${i + 1}</span>
-      <span class="step-type-badge step-type-${step.type}">${step.type}</span>
-      <span style="font-size:13px">${esc(stepDescription(step))}</span>
-    </div>`).join('')}
-  </div>`;
+function resetAgentButtons() {
+  const runBtn = document.getElementById('agentRunBtn');
+  const stopBtn = document.getElementById('agentStopBtn');
+  if (runBtn) runBtn.disabled = false;
+  if (stopBtn) stopBtn.classList.add('hidden');
 }
 
-function useAISteps() {
-  if (aiGeneratedSteps.length === 0) return;
-  builderSteps = JSON.parse(JSON.stringify(aiGeneratedSteps));
-  switchBuilderTab('manual');
-  renderBuilderSteps();
-  toast(`${builderSteps.length} steps added`, 'success');
-  document.getElementById('aiPreview').classList.add('hidden');
-}
-
-function showAIKeyInstructions() {
-  const info = document.getElementById('aiPreview');
-  info.classList.remove('hidden');
-  document.getElementById('aiPreviewList').innerHTML = `
-    <div class="alert alert-warning">
-      <div>
-        <strong>AI features require an API key.</strong><br>
-        Set the <code>ANTHROPIC_API_KEY</code> environment variable before starting the server:<br>
-        <code style="display:block;margin-top:8px;padding:8px;background:#fff;border-radius:4px">export ANTHROPIC_API_KEY=your_key_here</code>
-      </div>
-    </div>`;
+function stopAiAgent() {
+  if (!activeAgentSession) return;
+  activeAgentSession.cancelled = true;
+  DEL(`/api/ai-agent-sessions/${activeAgentSession.id}`).catch(() => {});
+  agentLogLine('Stopping…');
+  resetAgentButtons();
 }
 
 // ─── SAVE STEPS AS ACTION MODAL ───────────────────────────────────────────────
@@ -2908,8 +3532,8 @@ function renderActionCards(actions) {
         </div>
       </div>
       <div class="sc-actions">
-        <button class="btn btn-sm btn-ghost" onclick="openActionBuilder('${a.id}')" title="Edit">✏️ Edit</button>
-        <button class="btn btn-sm btn-ghost" onclick="deleteAction('${a.id}')" title="Delete" style="color:var(--error)">🗑️</button>
+        <button class="btn btn-sm btn-ghost" onclick="openActionBuilder('${a.id}')" data-tooltip="Edit">✏️ Edit</button>
+        <button class="btn btn-sm btn-ghost" onclick="deleteAction('${a.id}')" data-tooltip="Delete" style="color:var(--error)">🗑️</button>
       </div>
     </div>`;
   }).join('');
@@ -3028,15 +3652,21 @@ function renderActionBuilderSteps() {
 
 function actionStepItemHTML(step, i) {
   const desc = stepDescription(step);
-  return `<div class="step-item" id="ab-step-item-${i}">
+  return `<div class="step-item" id="ab-step-item-${i}" draggable="true"
+    ondragstart="stepDragStart(event,${i},'action')"
+    ondragover="stepDragOver(event,${i},'action')"
+    ondrop="stepDrop(event,${i},'action')"
+    ondragend="stepDragEnd(event,'action')"
+    style="cursor:grab">
     <div class="step-header" onclick="toggleActionStepExpand(${i})">
+      <span style="color:var(--muted);font-size:14px;padding:0 4px;cursor:grab;flex-shrink:0" data-tooltip="Drag to reorder">⠿</span>
       <span class="step-num">${i + 1}</span>
       <span class="step-type-badge step-type-${step.type}">${step.type}</span>
       <span class="step-desc">${esc(desc)}</span>
       <div class="step-actions" onclick="event.stopPropagation()">
-        ${i > 0 ? `<button class="btn btn-xs btn-ghost" onclick="moveActionStep(${i},-1)" title="Move up">↑</button>` : ''}
-        ${i < actionBuilderSteps.length - 1 ? `<button class="btn btn-xs btn-ghost" onclick="moveActionStep(${i},1)" title="Move down">↓</button>` : ''}
-        <button class="btn btn-xs btn-ghost" style="color:var(--error)" onclick="deleteActionStep(${i})" title="Delete">✕</button>
+        <button class="btn btn-xs btn-ghost" onclick="openAddActionStepPicker(${i + 1})" data-tooltip="Add step below">+</button>
+        <button class="btn btn-xs btn-ghost" onclick="duplicateActionStep(${i})" data-tooltip="Duplicate step">⧉</button>
+        <button class="btn btn-xs btn-ghost" style="color:var(--error)" onclick="deleteActionStep(${i})" data-tooltip="Delete">✕</button>
       </div>
     </div>
     <div class="step-body hidden" id="ab-step-body-${i}">
@@ -3059,6 +3689,13 @@ function moveActionStep(i, dir) {
 
 function deleteActionStep(i) {
   actionBuilderSteps.splice(i, 1);
+  renderActionBuilderSteps();
+}
+
+function duplicateActionStep(i) {
+  const copy = JSON.parse(JSON.stringify(actionBuilderSteps[i]));
+  copy.id = 'step_' + Date.now();
+  actionBuilderSteps.splice(i + 1, 0, copy);
   renderActionBuilderSteps();
 }
 
@@ -3093,9 +3730,11 @@ function actionStepParamsForm(step, i) {
     case 'navigate':
       return `<div class="form-group"><label>URL</label><input class="form-control" type="url" value="${esc(p.url || '')}" onchange="updateActionStepParam(${i},'url',this.value)" placeholder="https://example.com" /></div>`;
     case 'click':
+      return selectorField() + `<div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer"><input type="checkbox" ${p.force ? 'checked' : ''} onchange="updateActionStepParam(${i},'force',this.checked)" /> Force click (bypasses visibility check — use for hidden/styled checkboxes)</label></div>`;
     case 'assertVisible':
     case 'hover':
-      return selectorField();
+    case 'checkElement':
+      return selectorField() + (step.type === 'assertVisible' ? `<div class="form-group"><label class="form-label">Match index <span style="color:var(--muted);font-weight:400">(if multiple elements match, 0 = first)</span></label><input class="form-control" type="number" min="0" placeholder="0" value="${p.nth !== undefined && p.nth !== '' ? p.nth : ''}" onchange="updateActionStepParam(${i},'nth',this.value===''?undefined:parseInt(this.value))" style="width:80px" /></div>` : '');
     case 'type':
       return selectorField() + `<div class="form-group"><label>Text to Type</label><input class="form-control" type="text" value="${esc(p.value || '')}" onchange="updateActionStepParam(${i},'value',this.value)" placeholder="Text to enter" /></div>`;
     case 'assertText':
@@ -3107,7 +3746,8 @@ function actionStepParamsForm(step, i) {
             <option value="true" ${p.contains !== false ? 'selected' : ''}>Contains</option>
             <option value="false" ${p.contains === false ? 'selected' : ''}>Exact match</option>
           </select>
-        </div>`;
+        </div>
+        ${p.selectorType !== 'page' ? `<div class="form-group"><label class="form-label">Match index <span style="color:var(--muted);font-weight:400">(if multiple elements match, 0 = first)</span></label><input class="form-control" type="number" min="0" placeholder="0" value="${p.nth !== undefined && p.nth !== '' ? p.nth : ''}" onchange="updateActionStepParam(${i},'nth',this.value===''?undefined:parseInt(this.value))" style="width:80px" /></div>` : ''}`;
     case 'waitForElement':
       return selectorField() + `<div class="form-group"><label>Timeout (ms)</label><input class="form-control" type="number" value="${p.timeout || 5000}" onchange="updateActionStepParam(${i},'timeout',parseInt(this.value))" /></div>`;
     case 'screenshot':
@@ -3128,6 +3768,14 @@ function actionStepParamsForm(step, i) {
             <option value="to-element" ${p.direction === 'to-element' ? 'selected' : ''}>To Element</option>
           </select></div>
         <div class="form-group"><label>Pixels</label><input class="form-control" type="number" value="${p.pixels || 300}" onchange="updateActionStepParam(${i},'pixels',parseInt(this.value))" /></div>`;
+    case 'scrollElement':
+      return selectorField('Container Selector') + `
+        <div class="form-group"><label>Direction</label>
+          <select class="form-control" onchange="updateActionStepParam(${i},'direction',this.value)">
+            <option value="down" ${(p.direction || 'down') === 'down' ? 'selected' : ''}>Down</option>
+            <option value="up" ${p.direction === 'up' ? 'selected' : ''}>Up</option>
+          </select></div>
+        <div class="form-group"><label>Pixels</label><input class="form-control" type="number" value="${p.pixels || 300}" onchange="updateActionStepParam(${i},'pixels',parseInt(this.value))" /><div class="form-hint">Scrolls inside the element, not the whole page.</div></div>`;
     case 'assertURL':
       return `
         <div class="form-group"><label>URL</label><input class="form-control" type="text" value="${esc(p.url || '')}" onchange="updateActionStepParam(${i},'url',this.value)" placeholder="https://example.com/page" /></div>
@@ -3168,6 +3816,8 @@ function actionStepParamsForm(step, i) {
       return `<div class="form-group"><label>Timeout (ms)</label><input class="form-control" type="number" value="${p.timeout||5000}" onchange="updateActionStepParam(${i},'timeout',parseInt(this.value))" /></div>`;
     case 'waitSeconds':
       return `<div class="form-group"><label>Seconds</label><input class="form-control" type="number" min="1" max="60" step="1" value="${p.seconds||3}" onchange="updateActionStepParam(${i},'seconds',parseInt(this.value)||1)" /></div>`;
+    case 'runJS':
+      return `<div class="form-group"><label>JavaScript</label><textarea class="form-control" rows="4" style="font-family:monospace;font-size:13px" onchange="updateActionStepParam(${i},'script',this.value)" placeholder="document.querySelector('#edit-age-18').click();">${esc(p.script || '')}</textarea><div class="form-hint">Runs in the browser. Use document.querySelector() to target elements.</div></div>`;
     case 'visualBaseline':
       return `
         <div class="form-group"><label>Baseline Name</label><input class="form-control" type="text" value="${esc(p.name||'')}" onchange="updateActionStepParam(${i},'name',this.value)" /></div>
@@ -3176,7 +3826,9 @@ function actionStepParamsForm(step, i) {
       return selectorField('Click Target Selector') + `
         <div class="form-group"><label>Assert New Tab URL (exact, optional)</label><input class="form-control" type="text" value="${esc(p.assertURL||'')}" onchange="updateActionStepParam(${i},'assertURL',this.value)" /></div>
         <div class="form-group"><label>Assert New Tab URL Contains (optional)</label><input class="form-control" type="text" value="${esc(p.assertURLContains||'')}" onchange="updateActionStepParam(${i},'assertURLContains',this.value)" /></div>
-        <div class="form-group"><label>Assert New Tab Contains Text (optional)</label><input class="form-control" type="text" value="${esc(p.assertText||'')}" onchange="updateActionStepParam(${i},'assertText',this.value)" /></div>`;
+        <div class="form-group"><label>Assert New Tab Contains Text (optional)</label><input class="form-control" type="text" value="${esc(p.assertText||'')}" onchange="updateActionStepParam(${i},'assertText',this.value)" /></div>
+        <div class="form-group"><label>Assert New Tab PDF Contains (optional)</label><input class="form-control" type="text" value="${esc(p.assertPDFText||'')}" onchange="updateActionStepParam(${i},'assertPDFText',this.value)" /></div>
+        <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer"><input type="checkbox" ${p.switchToTab ? 'checked' : ''} onchange="updateActionStepParam(${i},'switchToTab',this.checked)" /> Switch to new tab (subsequent steps run in the new tab)</label></div>`;
     case 'fileDownload':
       return selectorField('Download Link Selector') + `
         <div class="form-group"><label>Expected Filename (optional)</label><input class="form-control" type="text" value="${esc(p.expectedFilename||'')}" onchange="updateActionStepParam(${i},'expectedFilename',this.value)" /></div>`;
@@ -3218,19 +3870,24 @@ function actionStepParamsForm(step, i) {
         </div>`;
     case 'exitFrame':
       return `<div class="text-muted text-sm">No parameters needed — exits the current iframe context.</div>`;
+    case 'closeTab':
+      return `<div class="text-muted text-sm">Closes the current tab and returns subsequent steps to the previous tab.</div>`;
+    case 'switchToNewTab':
+      return `<div class="form-group"><label>Assert URL Contains (optional)</label><input class="form-control" type="text" value="${esc(p.assertURLContains || '')}" onchange="updateActionStepParam(${i},'assertURLContains',this.value)" placeholder="e.g. tryngolza.com" /></div>`;
     default:
       return `<div class="text-muted text-sm">No parameters for this step type.</div>`;
   }
 }
 
-function openAddActionStepPicker() {
+function openAddActionStepPicker(insertAt) {
+  const idx = insertAt != null ? insertAt : null;
   // Same step types as scenario builder but without useAction (no nesting)
   const pickableTypes = STEP_TYPES.filter(st => st.type !== 'useAction');
   const html = `
     <p style="font-size:13px;color:var(--muted);margin-bottom:14px">Choose the type of step to add:</p>
     <div class="step-type-picker">
       ${pickableTypes.map(st => `
-      <div class="step-type-option" onclick="addActionStep('${st.type}')">
+      <div class="step-type-option" onclick="addActionStep('${st.type}',${idx != null ? idx : 'null'})">
         <div class="sto-label">${st.label}</div>
         <div class="sto-desc">${st.desc}</div>
       </div>`).join('')}
@@ -3251,7 +3908,7 @@ function openAddActionStepPicker() {
   document.body.appendChild(overlay);
 }
 
-function addActionStep(type) {
+function addActionStep(type, insertAt) {
   const overlay = document.getElementById('actionStepPickerOverlay');
   if (overlay) overlay.remove();
 
@@ -3272,9 +3929,14 @@ function addActionStep(type) {
     visualBaseline:   { name: '', threshold: 0.1 },
     hover:            { selector: '', selectorType: 'css' },
     selectOption:     { selector: '', selectorType: 'css', value: '' },
+    checkElement:     { selector: '', selectorType: 'css' },
     pressKey:         { key: 'Enter' },
+    runJS:            { script: '' },
+    closeTab:         {},
+    switchToNewTab:   { assertURLContains: '' },
     scroll:           { direction: 'down', pixels: 300 },
     scrollToElement:  { selector: '', selectorType: 'css' },
+    scrollElement:    { selector: '', selectorType: 'css', direction: 'down', pixels: 300 },
     newTab:           { selector: '', selectorType: 'text', assertURL: '', assertURLContains: '', assertText: '' },
     fileDownload:     { selector: '', selectorType: 'text', expectedFilename: '' },
     switchFrame:        { selector: '', selectorType: 'css' },
@@ -3283,19 +3945,20 @@ function addActionStep(type) {
     assertElementSize:  { selector: '', dimension: 'height', expected: null, tolerance: 2 }
   };
 
-  actionBuilderSteps.push({
-    id: 'step_' + Date.now(),
-    type,
-    params: defaults[type] || {}
-  });
+  const newStep = { id: 'step_' + Date.now(), type, params: defaults[type] || {} };
+  if (insertAt != null && insertAt >= 0 && insertAt <= actionBuilderSteps.length) {
+    actionBuilderSteps.splice(insertAt, 0, newStep);
+  } else {
+    actionBuilderSteps.push(newStep);
+  }
 
   renderActionBuilderSteps();
 
   setTimeout(() => {
-    const last = actionBuilderSteps.length - 1;
-    const body = document.getElementById(`ab-step-body-${last}`);
+    const idx = insertAt != null ? insertAt : actionBuilderSteps.length - 1;
+    const body = document.getElementById(`ab-step-body-${idx}`);
     if (body) body.classList.remove('hidden');
-    const item = document.getElementById(`ab-step-item-${last}`);
+    const item = document.getElementById(`ab-step-item-${idx}`);
     if (item) item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, 50);
 }
@@ -3352,7 +4015,7 @@ function scheduleCardHTML(s) {
   return `<div class="schedule-card">
     <div class="schedule-card-header">
       <div class="schedule-name">⏰ ${esc(s.name)}</div>
-      <button class="toggle-badge ${enabledClass}" onclick="toggleSchedule('${s.id}')" title="Click to toggle">${enabledLabel}</button>
+      <button class="toggle-badge ${enabledClass}" onclick="toggleSchedule('${s.id}')" data-tooltip="Click to toggle">${enabledLabel}</button>
     </div>
     <div style="font-size:13px;color:var(--muted);margin-bottom:8px">${typeLabel}: <strong style="color:var(--text)">${esc(s.targetName || s.targetId)}</strong></div>
     <div class="schedule-meta">
@@ -3574,6 +4237,13 @@ async function openScheduleModal(scheduleId) {
     </div>
 
     <div class="form-group">
+      <label>Notify Emails on Completion <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+      <input class="form-control" id="scNotifyEmails" type="text" placeholder="alice@example.com, bob@example.com"
+        value="${esc(schedule?.notifyEmails || '')}" />
+      <div class="form-hint">Comma-separated. A report email is sent automatically after each scheduled run.</div>
+    </div>
+
+    <div class="form-group">
       <label style="display:flex;align-items:center;gap:10px">
         <label class="toggle-switch">
           <input type="checkbox" id="scEnabled" ${selEnabled ? 'checked' : ''} />
@@ -3605,14 +4275,15 @@ async function openScheduleModal(scheduleId) {
       if (!cronExpression) { toast('Please enter a cron expression', 'error'); return false; }
     }
 
-    const browser  = document.querySelector('input[name=scBrowser]:checked')?.value || 'chromium';
-    const device   = document.getElementById('scDevice').value;
-    const timezone = document.getElementById('scTimezone').value;
-    const enabled  = document.getElementById('scEnabled').checked;
-    const projectId= document.getElementById('scProject')?.value || state.currentProjectId || null;
+    const browser      = document.querySelector('input[name=scBrowser]:checked')?.value || 'chromium';
+    const device       = document.getElementById('scDevice').value;
+    const timezone     = document.getElementById('scTimezone').value;
+    const enabled      = document.getElementById('scEnabled').checked;
+    const projectId    = document.getElementById('scProject')?.value || state.currentProjectId || null;
+    const notifyEmails = document.getElementById('scNotifyEmails').value.trim();
 
     const body = { name, projectId, targetType, targetId, browser, device, frequency,
-                   hour, dayOfWeek, cronExpression, timezone, enabled };
+                   hour, dayOfWeek, cronExpression, timezone, enabled, notifyEmails };
 
     try {
       if (schedule) {
@@ -3730,6 +4401,13 @@ async function openRunModal(type, id) {
         <input class="form-control" id="customH" type="number" value="720" min="320" max="2160" />
       </div>
     </div>
+
+    ${type === 'suite' ? `
+    <div class="form-group">
+      <label>Notify Emails on Completion <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+      <input class="form-control" id="runNotifyEmails" type="text" placeholder="alice@example.com, bob@example.com" />
+      <div class="form-hint">Comma-separated. A report email is sent automatically when the run finishes.</div>
+    </div>` : ''}
   `;
 
   openModal('Configure Test Run', html, 'modal-sm', async () => {
@@ -3743,6 +4421,9 @@ async function openRunModal(type, id) {
         width: parseInt(document.getElementById('customW').value) || 1280,
         height: parseInt(document.getElementById('customH').value) || 720
       };
+    }
+    if (type === 'suite') {
+      body.notifyEmails = document.getElementById('runNotifyEmails')?.value.trim() || '';
     }
     startRun(type, id, body);
   }, '▶ Run Test');
@@ -3825,8 +4506,9 @@ async function startDataDrivenRun(scenarioId, csvText, browser, device) {
     });
 
     if (!response.ok) {
-      const err = await response.json();
-      toast('Data run failed: ' + (err.error || 'Unknown error'), 'error');
+      let errMsg = `Server error (${response.status})`;
+      try { const err = await response.json(); errMsg = err.error || errMsg; } catch {}
+      toast('Data run failed: ' + errMsg, 'error');
       return;
     }
 
@@ -3873,6 +4555,7 @@ function handleDataDrivenEvent(event) {
   }
 
   switch (event.type) {
+    case 'ping': break;
     case 'csv_start':
       addLine(`Data-driven run: ${event.totalRows} rows`, 'info', '⚡');
       break;
@@ -3986,7 +4669,7 @@ async function rerunFailed(runId) {
     const browser = document.querySelector('input[name=runBrowser]:checked')?.value || run.browser || 'chromium';
     const device = document.getElementById('runDevice').value;
     const environmentId = document.getElementById('runEnvironment')?.value || null;
-    const body = { browser, device, scenarioIds: failedIds };
+    const body = { browser, device, scenarioIds: failedIds, parentRunId: runId };
     if (environmentId) body.environmentId = environmentId;
     if (device === 'custom') {
       body.customViewport = {
@@ -3998,61 +4681,74 @@ async function rerunFailed(runId) {
   }, '↺ Re-run Failed');
 }
 
+async function mergeRerun(runId) {
+  const bodyHTML = `
+    <p style="font-size:14px;color:var(--muted);margin-bottom:16px">Enter the Job # of the rerun whose passed results should be merged into this report.</p>
+    <div class="form-group">
+      <label>Rerun Job #</label>
+      <input type="number" id="mergeJobNumber" class="form-control" placeholder="e.g. 132" autofocus>
+    </div>`;
+  openModal('Merge Rerun Results', bodyHTML, 'modal-sm', async () => {
+    const jobNumber = parseInt(document.getElementById('mergeJobNumber').value);
+    if (!jobNumber) { toast('Please enter a job number', 'error'); return false; }
+    try {
+      await POST(`/api/runs/${runId}/merge`, { jobNumber });
+    } catch (e) {
+      toast(e.message || 'Merge failed', 'error');
+      return false;
+    }
+    toast('Rerun results merged', 'success');
+    closeModal();
+    await renderRunDetail(runId);
+    return false;
+  }, 'Merge');
+}
+
 async function startRun(type, id, body) {
   closeModal();
   const url = type === 'suite' ? `/api/runs/suite/${id}` : `/api/runs/scenario/${id}`;
 
-  // Show live run console
   openRunConsole();
 
-  const es = new EventSource(url + '?' + new URLSearchParams({ _start: Date.now() }));
-
-  // We need POST with body, so use fetch + ReadableStream
-  es.close();
-
-  const controller = new AbortController();
-  state.runningRun = { controller };
+  let cancelled = false;
+  state.runningRun = { controller: { abort: () => { cancelled = true; } } };
 
   try {
     const token = getToken();
     const runHeaders = { 'Content-Type': 'application/json' };
     if (token) runHeaders['Authorization'] = `Bearer ${token}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: runHeaders,
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
 
-    if (!response.ok) {
-      const err = await response.json();
-      toast('Run failed: ' + (err.error || 'Unknown error'), 'error');
+    const startResp = await fetch(url, { method: 'POST', headers: runHeaders, body: JSON.stringify(body) });
+    if (!startResp.ok) {
+      let errMsg = `Server error (${startResp.status})`;
+      try { const err = await startResp.json(); errMsg = err.error || errMsg; } catch {}
+      toast('Run failed: ' + errMsg, 'error');
       return;
     }
+    const { data } = await startResp.json();
+    const runId = data.runId;
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const event = JSON.parse(line.slice(6));
-            handleRunEvent(event);
-          } catch {}
+    // Poll for events
+    let since = 0;
+    while (!cancelled) {
+      await new Promise(r => setTimeout(r, 1000));
+      if (cancelled) break;
+      try {
+        const pollResp = await fetch(`/api/runs/${runId}/events?since=${since}`, { headers: runHeaders });
+        if (!pollResp.ok) break;
+        const { events, done } = await pollResp.json();
+        for (const event of events) {
+          handleRunEvent(event);
         }
+        since += events.length;
+        if (done) break;
+      } catch (e) {
+        if (!cancelled) toast('Connection error during run', 'error');
+        break;
       }
     }
   } catch (e) {
-    if (e.name !== 'AbortError') {
-      toast('Connection error during run', 'error');
-    }
+    if (!cancelled) toast('Run failed: ' + e.message, 'error');
   } finally {
     state.runningRun = null;
     await loadRuns();
@@ -4100,6 +4796,7 @@ function handleRunEvent(event) {
   }
 
   switch (event.type) {
+    case 'ping': break;
     case 'run_start':
       runConsoleRunId = event.runId;
       addLine(`Starting: ${event.name}`, 'info', '▶');
@@ -4238,6 +4935,11 @@ function toast(message, type = 'info') {
 
 function esc(str) {
   return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function screenshotSrc(runId, shot) {
+  if (!shot) return '';
+  return /\.(jpg|jpeg|png)$/i.test(shot) ? `/screenshots/${runId}/${shot}` : `data:image/jpeg;base64,${shot}`;
 }
 
 function capitalize(str) {
@@ -4724,7 +5426,7 @@ async function openShareProjectModal(projectId) {
             <div style="font-weight:500">${esc(owner.name)}</div>
             <div style="font-size:12px;color:var(--muted)">${esc(owner.email)}</div>
           </div>
-          <span style="font-size:18px" title="Owner">👑</span>
+          <span style="font-size:18px" data-tooltip="Owner">👑</span>
         </div>` : '<div style="color:var(--muted);font-size:13px">Legacy project (no owner)</div>'}
         ${sharedUsers.map(u => `
         <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
